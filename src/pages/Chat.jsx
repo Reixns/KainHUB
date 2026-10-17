@@ -232,7 +232,7 @@ export default function Chat() {
   const isCustomer = auth.role === 'customer';
   const isDarkChat = auth.role === 'customer' || auth.role === 'vendor';
   const pageClass = isCustomer
-    ? '-mx-3 -my-4 min-h-[calc(100dvh-8rem)] bg-[#101014] px-3 pb-12 pt-4 text-white sm:-mx-4 sm:-my-5 sm:px-5 sm:pt-5 lg:-mx-8 lg:-my-8 lg:px-8 lg:pt-6'
+    ? 'flex min-h-0 flex-1 flex-col bg-[#101014] text-white lg:-mx-8 lg:-my-4 lg:px-8 lg:py-4'
     : 'mx-auto max-w-[1440px] p-3 text-white sm:p-5 lg:p-7';
   const panelClass = isDarkChat
     ? 'border border-white/10 bg-white/[0.045] shadow-none'
@@ -369,7 +369,7 @@ export default function Chat() {
 
   return (
     <div className={pageClass}>
-      <div className="mb-3 flex items-center gap-2">
+      <div className={`mb-3 flex items-center gap-2 ${isCustomer && !mobileShowConversations ? 'hidden lg:flex' : ''}`}>
         <Link
           to={auth.role === 'customer' ? '/customer' : '/vendor/dashboard'}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-brand-line bg-brand-soft text-brand-strong transition hover:bg-brand-muted"
@@ -386,12 +386,11 @@ export default function Chat() {
       </div>
 
       {/*
-        The inbox and thread share one viewport-height panel on mobile; selecting
-        a conversation switches views instead of squeezing both into a short
-        screen. `dvh` follows mobile browser chrome, while the safe-area insets
-        keep the composer clear of the bottom navigation and home indicator.
+        The customer shell gives this screen the space between its header and
+        bottom navigation. The thread and composer can fill that space without
+        guessed viewport offsets or sitting underneath the navigation.
       */}
-      <div className={`grid h-[calc(100dvh-11rem-env(safe-area-inset-top)-2*env(safe-area-inset-bottom))] max-h-[820px] grid-rows-1 gap-2 lg:h-[calc(100dvh-8rem-env(safe-area-inset-top)-2*env(safe-area-inset-bottom))] lg:gap-2 ${desktopShowDetails ? 'lg:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-cols-[240px_minmax(0,1fr)_280px]' : 'lg:grid-cols-[240px_minmax(0,1fr)]'}`}>
+      <div className={`${isCustomer ? 'grid min-h-0 flex-1 grid-rows-1 gap-2' : 'grid h-[calc(100dvh-11rem-env(safe-area-inset-top)-2*env(safe-area-inset-bottom))] max-h-[820px] grid-rows-1 gap-2 lg:h-[calc(100dvh-8rem-env(safe-area-inset-top)-2*env(safe-area-inset-bottom))]'} ${desktopShowDetails ? 'lg:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-cols-[240px_minmax(0,1fr)_280px]' : 'lg:grid-cols-[240px_minmax(0,1fr)]'}`}>
         <Card className={`${mobileShowConversations ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-2xl ${panelClass} p-2 lg:flex lg:p-3`}>
           <div className={`shrink-0 px-3 pb-3 pt-2 ${panelHeaderClass}`}>
             <div className="flex items-center justify-between gap-2">

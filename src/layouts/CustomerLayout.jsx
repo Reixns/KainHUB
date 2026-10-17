@@ -1,4 +1,4 @@
-import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Store, ClipboardList, User, ShoppingCart, Bell, LogOut, Utensils, MessageSquare, Search, Heart, Users } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Toasts, Avatar, isEmojiSource, PlatformLogo } from '@/components/UI';
@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 export default function CustomerLayout() {
   const { auth, cart, logout, notifications, platformSettings, favoriteCount } = useApp();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
   const menuRef = useRef(null);
@@ -19,6 +20,8 @@ export default function CustomerLayout() {
 
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0);
   const unreadNotifs = notifications.filter((n) => String(n.userId) === String(auth.user?.id) && !n.read).length;
+  const showMobileSearch = pathname === '/customer' || pathname === '/customer/community';
+  const isMessagesPage = pathname === '/customer/messages';
 
   const handleLogout = () => {
     logout();
@@ -47,7 +50,7 @@ export default function CustomerLayout() {
   }, [menuOpen]);
 
   return (
-    <div className="customer-portal-theme min-h-screen bg-[#101014] pb-20 text-white lg:pb-0">
+    <div className={`customer-portal-theme bg-[#101014] text-white ${isMessagesPage ? 'flex h-[100dvh] min-h-0 flex-col overflow-hidden' : 'min-h-screen pb-20 lg:pb-0'}`}>
       {/*
         The flat dark header uses the same violet canvas as the customer
         discovery page and the account portals.
@@ -62,7 +65,7 @@ export default function CustomerLayout() {
         The inner row stays a fixed h-14 so the bar's controls keep their height
         and the mobile search row below it does not move.
       */}
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#101014] pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-50 shrink-0 border-b border-white/10 bg-[#101014] pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex h-14 min-w-0 max-w-7xl items-center gap-3 px-4 lg:gap-4 lg:px-8">
           <Link to="/customer" className="flex items-center gap-2.5 shrink-0" aria-label="KainHUB home">
             <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden text-white">
@@ -110,7 +113,7 @@ export default function CustomerLayout() {
               to="/customer/messages"
               aria-label="Chat"
               title="Chat"
-              className="tap-target relative rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white"
+              className="tap-target relative hidden rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white lg:inline-flex"
             >
               <MessageSquare className="w-5 h-5" aria-hidden="true" />
             </Link>
@@ -144,27 +147,29 @@ export default function CustomerLayout() {
 
         {/* Mobile search row. Sits below the header bar so the controls above
             keep a predictable position as the user scrolls. */}
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const q = searchText.trim();
-            navigate(`/customer/shops${q ? `?search=${encodeURIComponent(q)}` : ''}`);
-          }}
-          role="search"
-          className="px-4 pb-2.5 lg:hidden"
-        >
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/45 pointer-events-none" aria-hidden="true" />
-            <input
-              type="search"
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="Search shops or cuisine"
-              aria-label="Search shops or cuisine"
-              className="w-full rounded-xl border border-white/10 bg-white/[0.045] py-2 pl-10 pr-3 text-sm text-white placeholder:text-white/40 transition-colors hover:border-white/20 focus:border-violet-400/70 focus:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-violet-400/20"
-            />
-          </div>
-        </form>
+        {showMobileSearch && (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const q = searchText.trim();
+              navigate(`/customer/shops${q ? `?search=${encodeURIComponent(q)}` : ''}`);
+            }}
+            role="search"
+            className="px-4 pb-2.5 lg:hidden"
+          >
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/45 pointer-events-none" aria-hidden="true" />
+              <input
+                type="search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Search shops or cuisine"
+                aria-label="Search shops or cuisine"
+                className="w-full rounded-xl border border-white/10 bg-white/[0.045] py-2 pl-10 pr-3 text-sm text-white placeholder:text-white/40 transition-colors hover:border-white/20 focus:border-violet-400/70 focus:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-violet-400/20"
+              />
+            </div>
+          </form>
+        )}
 
         {menuOpen && (
           <div ref={menuRef} className="absolute right-4 top-full mt-1 bg-[#19191f] rounded-card shadow-float border border-white/10 w-56 py-1 z-50 animate-fade-in">
@@ -213,15 +218,24 @@ export default function CustomerLayout() {
         when the phone is held in landscape. max() keeps the normal 12px gutter
         on every device that reports a 0 inset.
       */}
-        <main className="w-full min-w-0 max-w-7xl mx-auto px-3 py-5 sm:px-4 sm:py-6 lg:px-8 lg:py-8 page-enter pl-[max(0.75rem,env(safe-area-inset-left))] pb-[calc(1rem+env(safe-area-inset-bottom))] lg:pb-0">
+        <main className={`w-full min-w-0 max-w-7xl mx-auto page-enter pl-[max(0.75rem,env(safe-area-inset-left))] ${isMessagesPage
+          ? 'flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-0 pt-2 sm:px-4 lg:px-8 lg:py-4'
+          : 'px-3 py-5 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-4 sm:py-6 lg:px-8 lg:py-8 lg:pb-0'
+        }`}>
           <Outlet />
         </main>
 
       {/*
-        Bottom navigation. Mobile and small-tablet only: from md+ the header
-        links above replace it, so the reserved space is released as well.
+        Bottom navigation. On the messages screen it stays in the shell's
+        viewport-height flex layout, keeping the composer directly above it.
       */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-white/10 bg-[#101014] lg:hidden" aria-label="Primary">
+      <nav
+        className={`${isMessagesPage
+          ? 'static z-50 shrink-0 border-t border-white/10 bg-[#101014] lg:hidden'
+          : 'fixed bottom-0 left-0 right-0 z-50 border-t border-white/10 bg-[#101014] lg:hidden'
+        }`}
+        aria-label="Primary"
+      >
         <div className="flex">
           <BottomNav to="/customer/shops" icon={Store} label="Shops" />
           <BottomNav to="/customer/foods" icon={Utensils} label="Foods" />

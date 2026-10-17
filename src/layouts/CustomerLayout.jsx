@@ -225,15 +225,8 @@ export default function CustomerLayout() {
         <div className="flex">
           <BottomNav to="/customer/shops" icon={Store} label="Shops" />
           <BottomNav to="/customer/foods" icon={Utensils} label="Foods" />
-          <BottomNav to="/customer/community" icon={Users} label="Community" />
           <BottomNav to="/customer/orders" icon={ClipboardList} label="Orders" />
           <BottomNav to="/customer/messages" icon={MessageSquare} label="Chat" />
-          {/* Seven tabs. 320px / 7 still clears the 44px touch floor, and the label is the only thing that has to
-              fit -- "Favorites" wraps to two lines on the narrowest phones rather
-              than truncating, which is why it sits at text-[11px] like its
-              neighbours. Profile stays a direct tab so the account menu is not
-              the only way to reach it. */}
-          <BottomNav to="/customer/favorites" icon={Heart} label="Favorites" count={favoriteCount} />
           <BottomNav to="/customer/profile" icon={User} label="Profile" />
         </div>
         <div className="h-[env(safe-area-inset-bottom)]" />

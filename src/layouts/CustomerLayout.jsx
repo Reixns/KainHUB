@@ -113,7 +113,7 @@ export default function CustomerLayout() {
               to="/customer/messages"
               aria-label="Chat"
               title="Chat"
-              className="tap-target relative hidden rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white lg:inline-flex"
+              className="relative hidden h-11 w-11 items-center justify-center rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white lg:inline-flex"
             >
               <MessageSquare className="w-5 h-5" aria-hidden="true" />
             </Link>

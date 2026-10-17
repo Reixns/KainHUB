@@ -479,11 +479,10 @@ const persistAllVendors = async (client, state) => {
   }
 };
 
-const persistOrders = async (client, state, authUser, profile, vendorForOrders) => {
+const persistOrders = async (client, state, authUser, profile) => {
+  if (state.auth.role !== 'customer') return;
   const ordersToPersist = (state.orders || []).filter((item) => (
-    state.auth.role === 'admin'
-    || (state.auth.role === 'customer' && String(item.customerId) === String(profile?.id))
-    || (state.auth.role === 'vendor' && String(item.vendorId) === String(vendorForOrders?.id))
+    String(item.customerId) === String(profile?.id)
   ));
   for (const order of ordersToPersist) {
     const vendor = await client
@@ -494,7 +493,7 @@ const persistOrders = async (client, state, authUser, profile, vendorForOrders) 
     reportWriteError('select', 'vendors', vendor.error);
     const orderValues = {
       order_number: order.id, vendor_legacy_id: order.vendorId,
-      vendor_owner_id: vendor.data?.owner_id || vendorForOrders?.ownerId || null,
+      vendor_owner_id: vendor.data?.owner_id || null,
       customer_name: order.customerName, customer_mobile: order.customerMobile || null,
       customer_address: order.customerAddress || null, total: order.total,
       payment_status: order.paymentStatus || null, gcash_ref: order.gcashRef || null,
@@ -507,23 +506,43 @@ const persistOrders = async (client, state, authUser, profile, vendorForOrders) 
       special_instructions: order.specialInstructions || '', timeline: order.timeline || [],
     };
     /*
-      This is the checkout write. If it fails the customer has an order in
-      their list that only exists in this browser, so it must be loud.
+      Customers create orders, but only vendors advance their status. Re-upserting
+      an existing order from a customer's stale browser snapshot overwrote a newer
+      vendor status; only insert missing orders and leave existing rows untouched.
     */
-    const writeOrders = (values) => (state.auth.role === 'customer'
-      ? client.from('orders').upsert({ ...values, customer_id: authUser.id }, { onConflict: 'order_number' }).select('id').single()
-      : client.from('orders').update(values).eq('order_number', values.order_number).select('id').maybeSingle());
-    const savedOrder = await writeTolerant({
-      table: 'orders',
-      values: orderValues,
-      run: writeOrders,
-      onError: (error) => reportWriteError(state.auth.role === 'customer' ? 'upsert' : 'update', 'orders', error),
-    });
+    let savedOrder = await client
+      .from('orders')
+      .select('id')
+      .eq('order_number', order.id)
+      .eq('customer_id', authUser.id)
+      .maybeSingle();
+    if (savedOrder.error) {
+      reportWriteError('select', 'orders', savedOrder.error);
+      continue;
+    }
+    if (!savedOrder.data) {
+      savedOrder = await writeTolerant({
+        table: 'orders',
+        values: { ...orderValues, customer_id: authUser.id },
+        run: (values) => client.from('orders').insert(values).select('id').single(),
+        onError: (error) => {
+          if (error.code !== '23505') reportWriteError('insert', 'orders', error);
+        },
+      });
+      if (savedOrder.error?.code === '23505') {
+        savedOrder = await client
+          .from('orders')
+          .select('id')
+          .eq('order_number', order.id)
+          .eq('customer_id', authUser.id)
+          .maybeSingle();
+      }
+    }
     if (!savedOrder?.data?.id) {
       if (!savedOrder?.error) {
-        reportWriteError(state.auth.role === 'customer' ? 'upsert' : 'update', 'orders', {
+        reportWriteError('insert', 'orders', {
           code: 'NO_ROWS',
-          message: `No order row was returned for "${order.id}". Check that the order exists and the signed-in account is allowed to update it.`,
+          message: `No order row was returned for "${order.id}". Check that the order exists and belongs to the signed-in customer.`,
         });
       }
       continue;
@@ -552,6 +571,32 @@ const persistOrders = async (client, state, authUser, profile, vendorForOrders) 
     }
   }
 };
+
+export async function persistOrderStatus(order, role) {
+  if (!isSupabaseConfigured) return;
+  if (!order?.id || !order.status || !role) {
+    throw new Error('Order status update is missing required information.');
+  }
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const values = {
+    status: order.status,
+    updated_at: order.updatedAt,
+    timeline: order.timeline,
+    ...(order.rejectReason ? { reject_reason: order.rejectReason } : {}),
+  };
+  const { data, error } = await client
+    .from('orders')
+    .update(values)
+    .eq('order_number', order.id)
+    .eq('status', order.expectedStatus)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error(`Could not save order ${order.id}: ${error.message}`);
+  if (!data) {
+    throw new Error(`Order ${order.id} changed elsewhere or you no longer have permission to update it. Refresh and try again.`);
+  }
+}
 
 const persistPosts = async (client, state, authUser, vendorForPosts) => {
   for (const post of (state.posts || []).filter((item) => (
@@ -1097,15 +1142,14 @@ export async function persistState(state, authUser, options = {}) {
   const profile = await persistProfile(client, state, authUser);
   if (!canStillWrite()) return;
 
-  let vendorForOrders = null;
   if (state.auth.role === 'vendor') {
-    vendorForOrders = await persistVendor(client, state, authUser, profile);
+    await persistVendor(client, state, authUser, profile);
   } else if (state.auth.role === 'admin') {
     await persistAllVendors(client, state);
   }
   if (!canStillWrite()) return;
 
-  await persistOrders(client, state, authUser, profile, vendorForOrders);
+  await persistOrders(client, state, authUser, profile);
   if (!canStillWrite()) return;
 
   const vendorForPosts = state.auth.role === 'vendor'

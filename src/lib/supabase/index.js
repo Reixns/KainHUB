@@ -21,6 +21,7 @@ export { uploadMedia } from '@/lib/supabase/media';
 export {
   loadRemoteState,
   loadRemoteOrders,
+  persistOrderStatus,
   persistState,
   deleteSupabaseNotification,
   deleteSupabaseAccount,

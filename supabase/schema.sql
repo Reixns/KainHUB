@@ -623,6 +623,18 @@ update public.posts   set vendor_legacy_id  = round(vendor_legacy_id)::bigint  w
 update public.posts   set product_id        = round(product_id)::bigint        where product_id        is not null and product_id        <> round(product_id);
 update public.order_items set menu_legacy_id = round(menu_legacy_id)::bigint where menu_legacy_id is not null and menu_legacy_id <> round(menu_legacy_id);
 
+-- Repair older orders whose vendor owner was not recorded. The vendor RLS
+-- policies below use this link to let the shop advance its own order statuses.
+update public.orders o
+set vendor_owner_id = v.owner_id
+from public.vendors v
+where o.vendor_owner_id is null
+  and v.owner_id is not null
+  and (
+    v.legacy_id = o.vendor_legacy_id
+    or (v.legacy_id is null and v.id = o.vendor_legacy_id)
+  );
+
 -- Two menu items whose fractional ids rounded onto the same value now share a
 -- `legacy_id`. They are deliberately left alone: the unique index in section 7
 -- covers the pair `(vendor_id, legacy_id)`, so they only collide if they are
@@ -1091,7 +1103,19 @@ create policy menu_owner_write on public.menu_items for all
 
 drop policy if exists orders_participant on public.orders;
 create policy orders_participant on public.orders for select
-  using (customer_id = auth.uid() or vendor_owner_id = auth.uid() or public.is_admin());
+  using (
+    customer_id = auth.uid()
+    or vendor_owner_id = auth.uid()
+    or exists (
+      select 1 from public.vendors v
+      where v.owner_id = auth.uid()
+        and (
+          v.legacy_id = public.orders.vendor_legacy_id
+          or (v.legacy_id is null and v.id = public.orders.vendor_legacy_id)
+        )
+    )
+    or public.is_admin()
+  );
 
 drop policy if exists orders_customer_insert on public.orders;
 create policy orders_customer_insert on public.orders for insert
@@ -1099,7 +1123,32 @@ create policy orders_customer_insert on public.orders for insert
 
 drop policy if exists orders_participant_update on public.orders;
 create policy orders_participant_update on public.orders for update
-  using (customer_id = auth.uid() or vendor_owner_id = auth.uid() or public.is_admin());
+  using (
+    customer_id = auth.uid()
+    or vendor_owner_id = auth.uid()
+    or exists (
+      select 1 from public.vendors v
+      where v.owner_id = auth.uid()
+        and (
+          v.legacy_id = public.orders.vendor_legacy_id
+          or (v.legacy_id is null and v.id = public.orders.vendor_legacy_id)
+        )
+    )
+    or public.is_admin()
+  )
+  with check (
+    customer_id = auth.uid()
+    or vendor_owner_id = auth.uid()
+    or exists (
+      select 1 from public.vendors v
+      where v.owner_id = auth.uid()
+        and (
+          v.legacy_id = public.orders.vendor_legacy_id
+          or (v.legacy_id is null and v.id = public.orders.vendor_legacy_id)
+        )
+    )
+    or public.is_admin()
+  );
 
 -- Every policy below is dropped before it is recreated. `create policy` has no
 -- IF NOT EXISTS, so a second run of this script otherwise aborts with

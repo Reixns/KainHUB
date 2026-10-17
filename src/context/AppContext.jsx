@@ -29,6 +29,7 @@ import {
   uploadMedia as uploadSupabaseMedia,
   deleteSupabaseNotification,
   loadRemoteOrders,
+  persistOrderStatus,
 } from '@/lib/supabase';
 
 import { STORAGE_KEY, LOCAL_AUTH_KEY, ACTIVE_PORTAL_KEY, PORTAL_CHANGE_EVENT, FEED_CHANNEL, loadState, saveState, normalizeChats, mergeChats, mergePosts, mergeOrders, mergeFavorites, mergeById, updateIfChanged, nextLocalId, updateIdentityRow, normalizeFavorites, favoriteKey, ORDER_NOTIFICATION_TTL_MS, isNotificationExpired, pruneExpiredNotifications } from '@/context/persistence';
@@ -69,6 +70,12 @@ const NOTIFICATION_SWEEP_MS = 20 * 1000;
 // See the remote-persist effect below: this is how long a burst of state changes
 // is allowed to accumulate before one Supabase pass runs for all of them.
 const REMOTE_PERSIST_DEBOUNCE_MS = 1500;
+const ORDER_STATUS_TRANSITIONS = {
+  RECEIVED: ['PREPARING'],
+  PREPARING: ['READY'],
+  READY: ['COMPLETED', 'OUT FOR DELIVERY'],
+  'OUT FOR DELIVERY': ['COMPLETED'],
+};
 
 export function AppProvider({ children }) {
   const [initialState] = useState(loadState);
@@ -142,6 +149,7 @@ export function AppProvider({ children }) {
   const [authError, setAuthError] = useState(supabaseConfigError);
   const [authReady, setAuthReady] = useState(!supabase);
   const refreshInFlightRef = useRef(false);
+  const orderStatusWritesRef = useRef(new Set());
   const authWatchIdRef = useRef(0);
   const lastNotificationIdRef = useRef(0);
   // The signed-in account as of the last render, readable from inside async
@@ -1435,77 +1443,133 @@ export function AppProvider({ children }) {
     return order;
   }, [orders, vendors, auth, addNotification]);
 
-  const updateOrderStatus = useCallback((orderId, newStatus) => {
-    setOrders((current) => current.map((o) => {
-      if (o.id !== orderId) return o;
-      const now = new Date().toISOString();
-      return {
-        ...o,
-        status: newStatus,
-        updatedAt: now,
-        timeline: [...o.timeline, { status: newStatus, time: now }],
-      };
-    }));
-    const order = orders.find((o) => o.id === orderId);
-    if (order) {
+  const updateOrderStatus = useCallback(async (orderId, newStatus) => {
+    const order = orders.find((item) => String(item.id) === String(orderId));
+    if (!order) return;
+    if (auth.role !== 'vendor' && auth.role !== 'admin') {
+      showToast('Only the shop can update this order status.', 'error');
+      return;
+    }
+    const allowedStatuses = ORDER_STATUS_TRANSITIONS[order.status] || [];
+    const fulfillmentAllowsTransition = order.status !== 'READY'
+      || (order.fulfillment === 'DELIVERY' ? newStatus === 'OUT FOR DELIVERY' : newStatus === 'COMPLETED');
+    if (!allowedStatuses.includes(newStatus) || !fulfillmentAllowsTransition) {
+      showToast('This order status can no longer be changed from its current state.', 'error');
+      return;
+    }
+    const orderKey = String(order.id);
+    if (orderStatusWritesRef.current.has(orderKey)) return;
+    orderStatusWritesRef.current.add(orderKey);
+    const now = new Date().toISOString();
+    const updatedOrder = {
+      ...order,
+      status: newStatus,
+      updatedAt: now,
+      timeline: [...(order.timeline || []), { status: newStatus, time: now }],
+    };
+    setOrders((current) => current.map((item) => (
+      String(item.id) === orderKey ? updatedOrder : item
+    )));
+    showToast('Saving order status...', 'info');
+
+    try {
+      if (isSupabaseConfigured) {
+        if (!remoteUser?.id) throw new Error('Your database session is unavailable. Sign in again and retry.');
+        await persistOrderStatus({
+          ...updatedOrder,
+          expectedStatus: order.status,
+        }, auth.role);
+      }
       addNotification({
         userId: order.customerId,
         type: 'order',
         title: `Order ${newStatus}`,
-        message: `Your order ${orderId} is now ${newStatus}.`,
+        message: `Your order ${order.id} is now ${newStatus}.`,
         read: false,
-        createdAt: new Date().toISOString(),
-        // Transient: this row is only useful while the order is in flight. Without
-        // the TTL every status change left a permanent row behind, so one order
-        // ended up contributing five. See ORDER_NOTIFICATION_TTL_MS.
+        createdAt: now,
         expiresAt: orderNotificationExpiry(),
       });
-      if (newStatus === 'COMPLETED' && order.status !== 'COMPLETED') {
+      showToast('Order status saved.', 'success');
+      if (newStatus === 'COMPLETED') {
         const remainingQueue = orders.filter((item) => String(item.vendorId) === String(order.vendorId)
-          && item.id !== order.id
+          && String(item.id) !== orderKey
           && ['RECEIVED', 'PREPARING', 'READY', 'OUT FOR DELIVERY'].includes(item.status)).length;
-        setVendors((vlist) => vlist.map((v) => (
-          String(v.id) === String(order.vendorId) ? { ...v, queue: remainingQueue } : v
+        setVendors((vlist) => vlist.map((vendor) => (
+          String(vendor.id) === String(order.vendorId) ? { ...vendor, queue: remainingQueue } : vendor
         )));
       }
+    } catch (error) {
+      console.error('[orders] status save failed:', error);
+      setOrders((current) => current.map((item) => (
+        String(item.id) === orderKey && item.updatedAt === now ? order : item
+      )));
+      showToast(error instanceof Error ? error.message : 'Order status could not be saved. Please retry.', 'error');
+    } finally {
+      orderStatusWritesRef.current.delete(orderKey);
     }
-  }, [orders, addNotification]);
+  }, [orders, addNotification, showToast, remoteUser, auth.role]);
 
-  const rejectOrder = useCallback((orderId, reason) => {
-    // Read from `orders` rather than from a variable assigned inside the
-    // setState updater: when that hook already had a pending update React ran
-    // the updater after this line, so the assignment below never happened, the
-    // customer was never told their order was rejected, and the vendor queue
-    // was never decremented.
-    const order = orders.find((o) => o.id === orderId);
+  const rejectOrder = useCallback(async (orderId, reason) => {
+    const order = orders.find((item) => String(item.id) === String(orderId));
     if (!order) return;
-    setOrders((current) => current.map((o) => {
-      if (o.id !== orderId) return o;
-      const now = new Date().toISOString();
-      return {
-        ...o,
-        status: 'REJECTED',
-        updatedAt: now,
-        rejectReason: reason,
-        timeline: [...o.timeline, { status: 'REJECTED', time: now, reason }],
-      };
-    }));
-    addNotification({
-      userId: order.customerId,
-      type: 'order',
-      title: 'Order Rejected',
-      message: `Your order ${orderId} was rejected: ${reason}`,
-      read: false,
-      createdAt: new Date().toISOString(),
-      // Same reasoning as `updateOrderStatus`. A rejection is also a terminal
-      // status the customer has to see, so it is capped rather than kept
-      // forever, but it is not tied to the order still existing.
-      expiresAt: orderNotificationExpiry(),
-    });
-    setVendors((vlist) => vlist.map((v) => (
-      String(v.id) === String(order.vendorId) ? { ...v, queue: Math.max(0, (Number(v.queue) || 0) - 1) } : v
+    if (auth.role !== 'vendor' && auth.role !== 'admin') {
+      showToast('Only the shop can reject this order.', 'error');
+      return;
+    }
+    if (order.status !== 'RECEIVED') {
+      showToast('Only newly received orders can be rejected.', 'error');
+      return;
+    }
+    const orderKey = String(order.id);
+    if (orderStatusWritesRef.current.has(orderKey)) return;
+    orderStatusWritesRef.current.add(orderKey);
+    const now = new Date().toISOString();
+    const rejectionReason = reason?.trim() || 'Unavailable';
+    const updatedOrder = {
+      ...order,
+      status: 'REJECTED',
+      updatedAt: now,
+      rejectReason: rejectionReason,
+      timeline: [...(order.timeline || []), { status: 'REJECTED', time: now, reason: rejectionReason }],
+    };
+    setOrders((current) => current.map((item) => (
+      String(item.id) === orderKey ? updatedOrder : item
     )));
-  }, [orders, addNotification]);
+    showToast('Saving order status...', 'info');
+
+    try {
+      if (isSupabaseConfigured) {
+        if (!remoteUser?.id) throw new Error('Your database session is unavailable. Sign in again and retry.');
+        await persistOrderStatus({
+          ...updatedOrder,
+          expectedStatus: order.status,
+        }, auth.role);
+      }
+      addNotification({
+        userId: order.customerId,
+        type: 'order',
+        title: 'Order Rejected',
+        message: `Your order ${order.id} was rejected: ${rejectionReason}`,
+        read: false,
+        createdAt: now,
+        expiresAt: orderNotificationExpiry(),
+      });
+      showToast('Order rejection saved.', 'success');
+      setVendors((vlist) => vlist.map((vendor) => (
+        String(vendor.id) === String(order.vendorId)
+          ? { ...vendor, queue: Math.max(0, (Number(vendor.queue) || 0) - 1) }
+          : vendor
+      )));
+    } catch (error) {
+      console.error('[orders] status save failed:', error);
+      setOrders((current) => current.map((item) => (
+        String(item.id) === orderKey && item.updatedAt === now ? order : item
+      )));
+      showToast(error instanceof Error ? error.message : 'Order rejection could not be saved. Please retry.', 'error');
+    } finally {
+      orderStatusWritesRef.current.delete(orderKey);
+    }
+  }, [orders, addNotification, showToast, remoteUser, auth.role]);
 
   // VENDOR OPERATIONS
   const {

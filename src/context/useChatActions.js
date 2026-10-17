@@ -36,7 +36,15 @@ const chatKey = (vendorId, customerId) => `chat-${vendorId}-${customerId}`;
 */
 const sameParticipant = (left, right) => String(left ?? '') === String(right ?? '');
 
-export function useChatActions({ setChats, auth, vendors }) {
+export function useChatActions({ setChats, auth, vendors, persistMessage, showToast }) {
+  const persistImmediately = useCallback((payload, role = auth.role) => {
+    if (!persistMessage || !auth.user) return;
+    void persistMessage(payload, role).catch((error) => {
+      console.error('[chat] message send failed:', error);
+      showToast(error instanceof Error ? error.message : 'Message could not be sent. Check your connection and retry.', 'error');
+    });
+  }, [persistMessage, auth, showToast]);
+
   const toggleChatReaction = useCallback(({ chatId, messageId, emoji }) => {
     if (!chatId || !messageId || !emoji || !auth.user) return;
     setChats((current) => normalizeChats(current.map((chat) => {
@@ -100,70 +108,83 @@ export function useChatActions({ setChats, auth, vendors }) {
     if ((!body && !image) || !auth.user) return;
     const senderRole = auth.role;
     const senderId = auth.user.id;
+    const chatId = `chat-${vendorId}-${customerId}`;
+    const message = {
+      id: nextLocalId(),
+      senderId,
+      senderRole,
+      // Text messages carry no type at all, which is what the renderer keys
+      // off for the plain bubble. Only photo messages are typed.
+      ...(image ? { type: 'image', image } : {}),
+      text: body,
+      ...(replyTo?.messageId ? {
+        replyTo: {
+          messageId: replyTo.messageId,
+          sender: replyTo.sender,
+          text: replyTo.text,
+        },
+      } : {}),
+      createdAt: new Date().toISOString(),
+    };
     setChats((current) => appendMessage(current, {
-      chatId: `chat-${vendorId}-${customerId}`,
+      chatId,
       vendorId,
       customerId,
-      message: {
-        id: nextLocalId(),
-        senderId,
-        senderRole,
-        // Text messages carry no type at all, which is what the renderer keys
-        // off for the plain bubble. Only photo messages are typed.
-        ...(image ? { type: 'image', image } : {}),
-        text: body,
-        ...(replyTo?.messageId ? {
-          replyTo: {
-            messageId: replyTo.messageId,
-            sender: replyTo.sender,
-            text: replyTo.text,
-          },
-        } : {}),
-        createdAt: new Date().toISOString(),
-      },
+      message,
     }));
-  }, [setChats, auth]);
+    persistImmediately({ chatId, vendorId, customerId, message });
+  }, [setChats, auth, persistImmediately]);
 
   const sendChatMenu = useCallback(({ vendorId, customerId }) => {
     if (!auth.user || auth.role !== 'vendor') return;
     const vendor = vendors.find((item) => String(item.id) === String(vendorId));
     if (!vendor) return;
+    const chatId = `chat-${vendorId}-${customerId}`;
+    const message = {
+      id: nextLocalId(),
+      senderId: auth.user.id,
+      senderRole: 'vendor',
+      type: 'menu',
+      menu: vendor.menu || [],
+      text: `${vendor.name} shared the menu.`,
+      createdAt: new Date().toISOString(),
+    };
     setChats((current) => appendMessage(current, {
-      chatId: `chat-${vendorId}-${customerId}`,
+      chatId,
       vendorId,
       customerId,
-      message: {
-        id: nextLocalId(),
-        senderId: auth.user.id,
-        senderRole: 'vendor',
-        type: 'menu',
-        menu: vendor.menu || [],
-        text: `${vendor.name} shared the menu.`,
-        createdAt: new Date().toISOString(),
-      },
+      message,
     }));
-  }, [setChats, auth, vendors]);
+    persistImmediately({ chatId, vendorId, customerId, message });
+  }, [setChats, auth, vendors, persistImmediately]);
 
   const sendChatOrderReceipt = useCallback(({ order }) => {
-    if (!order) return;
+    if (!order || !auth.user || auth.role !== 'customer') return;
     const chatId = `chat-${order.vendorId}-${order.customerId}`;
+    const message = {
+      id: nextLocalId(),
+      senderId: auth.user.id,
+      senderRole: 'customer',
+      type: 'order_receipt',
+      orderId: order.id,
+      order,
+      text: `Order ${order.id} receipt`,
+      createdAt: new Date().toISOString(),
+    };
     setChats((current) => appendMessage(current, {
       chatId,
       vendorId: order.vendorId,
       customerId: order.customerId,
-      message: {
-        id: nextLocalId(),
-        senderId: order.customerId,
-        senderRole: 'customer',
-        type: 'order_receipt',
-        orderId: order.id,
-        order,
-        text: `Order ${order.id} receipt`,
-        createdAt: new Date().toISOString(),
-      },
+      message,
     }));
+    persistImmediately({
+      chatId,
+      vendorId: order.vendorId,
+      customerId: order.customerId,
+      message,
+    });
     return chatId;
-  }, [setChats]);
+  }, [setChats, auth, persistImmediately]);
 
   return { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction };
 }

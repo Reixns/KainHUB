@@ -152,6 +152,31 @@ export async function loadRemoteOrders(userId, role) {
   return mapOrders(result.data);
 }
 
+export async function loadRemoteChats(userId, role) {
+  const client = getSupabaseClient(role);
+  if (!client || !userId) return null;
+  const query = client.from('chats').select('*').order('updated_at', { ascending: false });
+  const result = role === 'customer'
+    ? await query.eq('customer_id', userId)
+    : await query;
+  if (result.error) {
+    throw new Error(`Could not load chats from the database: ${result.error.message}`);
+  }
+  return mapChats(result.data);
+}
+
+export async function persistChatMessage({ chatId, vendorId, customerId, message }, role) {
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { error } = await client.rpc('append_chat_message', {
+    p_chat_id: chatId,
+    p_vendor_legacy_id: vendorId,
+    p_customer_id: customerId,
+    p_message: message,
+  });
+  if (error) throw new Error(`Could not send message: ${error.message}`);
+}
+
 const persistProfile = async (client, state, authUser) => {
   const profile = state.auth?.user;
   /*
@@ -927,12 +952,35 @@ const persistChats = async (client, state, authUser, profile, vendorForPosts) =>
       into customer_id when replying transfers the thread away from its owner,
       so it disappears from the customer's inbox on the next refresh.
     */
-    reportWriteError('upsert', 'chats', (await client.from('chats').upsert({
-      id: chat.id,
-      vendor_legacy_id: chat.vendorId,
-      customer_id: state.auth.role === 'customer' ? authUser.id : chat.customerId,
-      messages: chat.messages || [], updated_at: chat.updatedAt || new Date().toISOString(),
-    }, { onConflict: 'id' })).error);
+    const existing = await client.from('chats').select('*').eq('id', chat.id).maybeSingle();
+    if (existing.error) {
+      reportWriteError('select', 'chats', existing.error);
+      continue;
+    }
+    const latestChat = existing.data ? mapChats([existing.data])[0] : null;
+    const persistedMessageIds = new Set((latestChat?.messages || []).map((message) => String(message.id)));
+    for (const message of (chat.messages || [])) {
+      if (!persistedMessageIds.has(String(message.id))) {
+        const { error } = await client.rpc('append_chat_message', {
+          p_chat_id: chat.id,
+          p_vendor_legacy_id: chat.vendorId,
+          p_customer_id: state.auth.role === 'customer' ? authUser.id : chat.customerId,
+          p_message: message,
+        });
+        if (error) reportWriteError('rpc append', 'chats', error);
+        continue;
+      }
+      const persistedMessage = latestChat.messages.find((item) => String(item.id) === String(message.id));
+      if (JSON.stringify(persistedMessage.reactions || []) === JSON.stringify(message.reactions || [])) continue;
+      const { error } = await client.rpc('update_chat_message_reactions', {
+        p_chat_id: chat.id,
+        p_vendor_legacy_id: chat.vendorId,
+        p_customer_id: state.auth.role === 'customer' ? authUser.id : chat.customerId,
+        p_message_id: String(message.id),
+        p_reactions: message.reactions || [],
+      });
+      if (error) reportWriteError('rpc reaction update', 'chats', error);
+    }
   }
 };
 

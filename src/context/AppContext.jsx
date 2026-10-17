@@ -29,6 +29,8 @@ import {
   uploadMedia as uploadSupabaseMedia,
   deleteSupabaseNotification,
   loadRemoteOrders,
+  loadRemoteChats,
+  persistChatMessage,
   persistOrderStatus,
 } from '@/lib/supabase';
 
@@ -152,6 +154,7 @@ export function AppProvider({ children }) {
   const orderStatusWritesRef = useRef(new Set());
   const [savingOrderIds, setSavingOrderIds] = useState(() => new Set());
   const [ordersRealtimeStatus, setOrdersRealtimeStatus] = useState('connecting');
+  const [chatRealtimeStatus, setChatRealtimeStatus] = useState('connecting');
   const authWatchIdRef = useRef(0);
   const lastNotificationIdRef = useRef(0);
   // The signed-in account as of the last render, readable from inside async
@@ -705,6 +708,71 @@ export function AppProvider({ children }) {
     return () => {
       active = false;
       setOrdersRealtimeStatus('disconnected');
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      void client.removeChannel(channel);
+    };
+  }, [auth.role, remoteUser]);
+
+  // Chat messages are appended through an RPC and delivered immediately through
+  // Realtime; the periodic refresh remains only as a recovery path.
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setChatRealtimeStatus('local');
+      return undefined;
+    }
+    if (!remoteUser?.id || !auth.role) {
+      setChatRealtimeStatus('disconnected');
+      return undefined;
+    }
+    const client = getSupabaseClient(auth.role);
+    if (!client) {
+      setChatRealtimeStatus('disconnected');
+      return undefined;
+    }
+
+    let active = true;
+    let refreshTimer = null;
+    const refreshChats = async () => {
+      try {
+        const remoteChats = await loadRemoteChats(remoteUser.id, auth.role);
+        if (!active || !remoteChats) return;
+        setChats((current) => {
+          const next = mergeChats(current, remoteChats);
+          return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+        });
+      } catch (error) {
+        if (active) {
+          const message = error instanceof Error ? error.message : 'Unknown database error.';
+          console.error('[chat] realtime refresh failed:', message);
+        }
+      }
+    };
+    const queueRefresh = () => {
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshChats();
+      }, 75);
+    };
+    setChatRealtimeStatus('connecting');
+    const channel = client
+      .channel(`chats:${auth.role}:${remoteUser.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, queueRefresh)
+      .subscribe((status, error) => {
+        if (status === 'SUBSCRIBED') {
+          setChatRealtimeStatus('connected');
+          void refreshChats();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setChatRealtimeStatus('reconnecting');
+          console.error(`[chat] Realtime subscription ${status.toLowerCase()}:`, error?.message || 'connection unavailable');
+        } else if (status === 'CLOSED') {
+          setChatRealtimeStatus('disconnected');
+        }
+      });
+
+    return () => {
+      active = false;
+      setChatRealtimeStatus('disconnected');
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
       void client.removeChannel(channel);
     };
@@ -1354,7 +1422,13 @@ export function AppProvider({ children }) {
     });
 
   // BUYER/VENDOR CHAT
-  const { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction } = useChatActions({ setChats, auth, vendors });
+  const { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction } = useChatActions({
+    setChats,
+    auth,
+    vendors,
+    persistMessage: isSupabaseConfigured ? persistChatMessage : null,
+    showToast,
+  });
 
   // NOTIFICATIONS
   const addNotification = useCallback((notif) => {
@@ -1824,7 +1898,8 @@ export function AppProvider({ children }) {
       authError,
     authReady,
       ordersRealtimeStatus,
-      savingOrderIds,
+    chatRealtimeStatus,
+    savingOrderIds,
     vendors,
     customers,
     admins,

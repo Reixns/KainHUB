@@ -1214,6 +1214,136 @@ create policy chats_participant on public.chats for all
   or exists (select 1 from vendors v where (v.legacy_id = vendor_legacy_id or v.id = vendor_legacy_id) and v.owner_id = auth.uid())
 );
 
+create or replace function public.append_chat_message(
+  p_chat_id text,
+  p_vendor_legacy_id bigint,
+  p_customer_id uuid,
+  p_message jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  caller_id uuid := auth.uid();
+  sender_role text := p_message ->> 'senderRole';
+  sender_id text := p_message ->> 'senderId';
+begin
+  if caller_id is null then
+    raise exception 'Authentication is required to send chat messages' using errcode = '42501';
+  end if;
+  if p_message is null
+     or jsonb_typeof(p_message) <> 'object'
+     or nullif(p_message ->> 'id', '') is null
+     or sender_id <> caller_id::text then
+    raise exception 'Invalid chat message' using errcode = '22023';
+  end if;
+
+  if sender_role = 'customer' then
+    if p_customer_id <> caller_id then
+      raise exception 'Customers may only send messages in their own chats' using errcode = '42501';
+    end if;
+  elsif sender_role = 'vendor' then
+    if not exists (
+      select 1 from public.vendors v
+      where (v.legacy_id = p_vendor_legacy_id or v.id = p_vendor_legacy_id)
+        and v.owner_id = caller_id
+    ) then
+      raise exception 'Vendor does not own this chat' using errcode = '42501';
+    end if;
+  else
+    raise exception 'Only chat participants may send messages' using errcode = '42501';
+  end if;
+
+  insert into public.chats (id, vendor_legacy_id, customer_id, messages, updated_at)
+  values (p_chat_id, p_vendor_legacy_id, p_customer_id, '[]'::jsonb, now())
+  on conflict (id) do nothing;
+
+  update public.chats c
+  set messages = coalesce(c.messages, '[]'::jsonb) || jsonb_build_array(p_message),
+      updated_at = now()
+  where c.id = p_chat_id
+    and c.vendor_legacy_id = p_vendor_legacy_id
+    and c.customer_id = p_customer_id
+    and not exists (
+      select 1
+      from jsonb_array_elements(coalesce(c.messages, '[]'::jsonb)) existing
+      where existing ->> 'id' = p_message ->> 'id'
+    );
+
+  if not found and not exists (
+    select 1
+    from public.chats c
+    where c.id = p_chat_id
+      and c.vendor_legacy_id = p_vendor_legacy_id
+      and c.customer_id = p_customer_id
+  ) then
+    raise exception 'Chat does not match the supplied participants' using errcode = '42501';
+  end if;
+end;
+$$;
+
+revoke all on function public.append_chat_message(text, bigint, uuid, jsonb) from public, anon;
+grant execute on function public.append_chat_message(text, bigint, uuid, jsonb) to authenticated;
+
+create or replace function public.update_chat_message_reactions(
+  p_chat_id text,
+  p_vendor_legacy_id bigint,
+  p_customer_id uuid,
+  p_message_id text,
+  p_reactions jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  caller_id uuid := auth.uid();
+begin
+  if caller_id is null then
+    raise exception 'Authentication is required to update chat reactions' using errcode = '42501';
+  end if;
+  if jsonb_typeof(p_reactions) <> 'array' then
+    raise exception 'Reactions must be an array' using errcode = '22023';
+  end if;
+  if caller_id <> p_customer_id and not exists (
+    select 1 from public.vendors v
+    where (v.legacy_id = p_vendor_legacy_id or v.id = p_vendor_legacy_id)
+      and v.owner_id = caller_id
+  ) then
+    raise exception 'Only chat participants may update reactions' using errcode = '42501';
+  end if;
+
+  update public.chats c
+  set messages = (
+        select jsonb_agg(
+          case
+            when item.message ->> 'id' = p_message_id
+              then jsonb_set(item.message, '{reactions}', p_reactions, true)
+            else item.message
+          end
+          order by item.ordinality
+        )
+        from jsonb_array_elements(coalesce(c.messages, '[]'::jsonb))
+          with ordinality as item(message, ordinality)
+      ),
+      updated_at = now()
+  where c.id = p_chat_id
+    and c.vendor_legacy_id = p_vendor_legacy_id
+    and c.customer_id = p_customer_id
+    and exists (
+      select 1
+      from jsonb_array_elements(coalesce(c.messages, '[]'::jsonb)) message
+      where message ->> 'id' = p_message_id
+    );
+end;
+$$;
+
+revoke all on function public.update_chat_message_reactions(text, bigint, uuid, text, jsonb) from public, anon;
+grant execute on function public.update_chat_message_reactions(text, bigint, uuid, text, jsonb) to authenticated;
+
 -- A favourites list is private to the account that owns it, so the policy is
 -- keyed on user_id only and there is no admin escape hatch: nothing in the app
 -- needs to read somebody else's favourites, and allowing it would expose a
@@ -1347,8 +1477,8 @@ create policy marketplace_media_delete on storage.objects for delete to authenti
   );
 
 -- Supabase Realtime only streams changes from tables in this publication.
--- Keep both the parent orders and child order_items table published so clients
--- can re-read joined order details as soon as either row changes.
+-- Keep the order tables and chats published so updates reach open clients
+-- immediately.
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
@@ -1364,8 +1494,14 @@ begin
     ) then
       alter publication supabase_realtime add table public.order_items;
     end if;
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'chats'
+    ) then
+      alter publication supabase_realtime add table public.chats;
+    end if;
   else
-    raise warning 'supabase_realtime publication is missing; orders will use periodic refresh until Realtime is enabled.';
+    raise warning 'supabase_realtime publication is missing; orders and chats will use periodic refresh until Realtime is enabled.';
   end if;
 end
 $$;

@@ -1,0 +1,626 @@
+@import "tailwindcss";
+
+/*
+ * KainHUB design system.
+ *
+ * Rules of the system, in priority order:
+ *  1. Hierarchy comes from type size, weight, and whitespace -- not from color
+ *     or elevation. Most surfaces are flat with a 1px hairline border.
+ *  2. Shadows are reserved for elements that genuinely float above the page
+ *     (sticky bars, popovers, modals, the one primary CTA). Cards do not cast
+ *     shadows at rest; they lift only on hover.
+ *  3. One accent color. Violet marks the primary action and nothing else.
+ *     Success/warning/danger appear only as small status text or badges.
+ *  4. Gradients are used in exactly one place: photo overlays, where a solid
+ *     scrim would not read over arbitrary vendor photography.
+ *  5. Motion is functional. A 120-150ms transition on state change, nothing
+ *     that loops or moves on its own.
+ */
+@theme {
+  /* Brand */
+  --color-brand: #7c3aed;
+  --color-brand-strong: #6d28d9;
+  --color-brand-deep: #5b21b6;
+  --color-brand-soft: #f5f3ff;
+  --color-brand-muted: #ede9fe;
+  --color-brand-line: #ddd6fe;
+  --color-brand-300: #c4b5fd;
+  --color-brand-400: #a78bfa;
+  --color-brand-800: #5b21b6;
+  --color-brand-900: #4c1d95;
+
+  /* Status. These are small text and badge fills, never large fills. */
+  --color-success: #047857;
+  --color-success-soft: #ecfdf5;
+  /* Deeper step for the pressed/hover state of solid success buttons. */
+  --color-success-deep: #065f46;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  /* `hover`/`active` step for the solid warning pill on status filters. */
+  --color-warning-deep: #92400e;
+  /* Star/rating fill. Kept separate from `warning`: a 5-star rating is not a
+     warning state, but it is the same amber the design system already uses,
+     so one value serves both and neither drifts. */
+  --color-rating: #eab308;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fef2f2;
+  --color-danger-deep: #b91c1c;
+  --color-info: #0369a1;
+  --color-info-soft: #f0f9ff;
+
+  /* Neutrals */
+  --color-ink: #18181b;
+  --color-body: #3f3f46;
+  --color-muted: #71717a;
+  --color-subtle: #a1a1aa;
+  --color-hairline: #e4e4e7;
+  --color-hairline-strong: #d4d4d8;
+  /*
+   * Categorical palette. Deliberately outside rules 1-4: these encode distinct
+   * series (stat tiles, revenue bars, vendor/order/promo roles) and are only
+   * used as solid fills behind a white icon, never for text or status. They
+   * are all 500-weight so a row of tiles reads as one set -- the row used to
+   * mix `--color-success` (#047857, a dark status green) in with five bright
+   * 500s, which made one tile visibly heavier than its neighbours.
+   */
+  --color-cat-green: #10b981;
+  --color-cat-blue: #3b82f6;
+  --color-cat-teal: #14b8a6;
+  --color-cat-violet: #8b5cf6;
+  --color-cat-amber: #f59e0b;
+  --color-cat-pink: #ec4899;
+  --color-cat-blue-deep: #2563eb;
+  --color-cat-violet-soft: #ede9fe;
+  --color-cat-violet-deep: #6d28d9;
+  --color-cat-teal-soft: #ccfbf1;
+  --color-cat-teal-deep: #0f766e;
+
+  /*
+   * hairline-hover is the darkening step for border emphasis on hover. The code
+   * was reaching for Tailwind's `hover:border-gray-400` at 24 call sites, which
+   * is a second, undeclared neutral and rendered visibly blue next to the zinc
+   * hairlines it sits on. These two were the only neutrals the system needed
+   * that did not already have a name.
+   */
+  --color-hairline-hover: #a1a1aa;
+
+  /* Surfaces */
+  --color-canvas: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #fafafa;
+  /* Resting hover fill for white rows, cards, and icon buttons. */
+  --color-surface-hover: #f4f4f5;
+
+  /* Radii. Slightly less rounded than the previous 1.5rem cards, which read
+     as playful rather than production. */
+  --radius-card: 0.875rem;
+  --radius-control: 0.625rem;
+
+  /*
+   * Elevation. card is a hairline-only surface. raised is for sticky bars and
+   * popovers. float is for modals. brand is the single tinted shadow, reserved
+   * for the primary CTA.
+   */
+  --shadow-card: 0 0 0 1px rgba(24, 24, 27, 0.04);
+  --shadow-raised: 0 1px 2px rgba(24, 24, 27, 0.04), 0 4px 12px rgba(24, 24, 27, 0.06);
+  --shadow-float: 0 8px 32px rgba(24, 24, 27, 0.12);
+  --shadow-brand: 0 1px 2px rgba(109, 40, 217, 0.24);
+}
+
+:root {
+  --shadow-soft: var(--shadow-raised);
+  --radius-card: 0.875rem;
+  --radius-control: 0.625rem;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  /*
+   * System font stack. The previous stack was Windows-only ('Segoe UI',
+   * 'Trebuchet MS'), so iOS and Android fell back to generic sans-serif --
+   * the app looked noticeably worse on the platform most customers use.
+   * -apple-system / Segoe UI Variable / Roboto resolve to the native UI font
+   * on each OS, which renders crisply and needs no webfont download.
+   */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Display', 'Segoe UI',
+    Roboto, 'Helvetica Neue', 'Noto Sans', 'Liberation Sans', Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  background: var(--color-canvas);
+  color: var(--color-body);
+}
+
+body {
+  /*
+   * Flat neutral canvas. The previous background layered two radial color
+   * washes plus a vertical gradient, which tinted every page and made
+   * white cards look dirty by comparison.
+   */
+  background: var(--color-canvas);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--color-brand-strong);
+  outline-offset: 2px;
+}
+
+a {
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--color-brand-muted);
+}
+
+/*
+ * A single, consistent focus treatment for the whole app. Previously each
+ * control rolled its own focus ring (ring-4 brand-muted on some, outline-3
+ * rgba on others), so keyboard focus looked different on every screen.
+ */
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-brand-strong);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/*
+  The sign-in and registration shell.
+
+  All four gutters are env()-aware, and the reason each one is there differs:
+
+    top     the card is centred in 100dvh, so on a phone with a home indicator it
+            could otherwise sit with its submit button under the indicator
+    bottom  same, and the only one that matters when the keyboard is closed
+    left    in landscape on a notched phone the left cut out is a wide band, and
+  right      the card was clipped by it on the very screens where a customer
+            first meets the app
+
+  max() keeps the plain 1rem gutter on every device reporting a 0 inset, so a
+  browser without the insets renders exactly what it did before. `viewport-fit=cover`
+  in index.html is what makes these report a non-zero value at all; without it
+  every one of them is 0 and the safe-area work is invisible.
+*/
+.auth-page-shell {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding:
+    max(2rem, env(safe-area-inset-top))
+    max(1rem, env(safe-area-inset-right))
+    max(2rem, env(safe-area-inset-bottom))
+    max(1rem, env(safe-area-inset-left));
+  background:
+    radial-gradient(ellipse at 12% 8%, rgba(124, 58, 237, 0.08), transparent 38%),
+    var(--color-canvas);
+}
+
+/*
+ * Rule 2 of the design system: cards do not cast shadows at rest. This one had
+ * `--shadow-raised` baked in, which meant every auth page on every portal had a
+ * resting elevation no other card in the app had. Kept the hairline border;
+ * drop `shadow-raised` here if a single auth card ever needs to lift.
+ */
+.auth-card {
+  width: min(100%, 28rem);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: 1rem;
+}
+
+.auth-form label {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.auth-input {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background-color: #101014 !important;
+  color: #fff !important;
+}
+
+.auth-input::placeholder {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.auth-input:hover {
+  border-color: rgba(196, 181, 253, 0.5) !important;
+}
+
+.auth-input:focus {
+  border-color: #a78bfa !important;
+  background-color: #15141b !important;
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2) !important;
+}
+
+.register-form label {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.register-input {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background-color: #101014 !important;
+  color: #fff !important;
+}
+
+.register-input::placeholder {
+  color: rgba(255, 255, 255, 0.3) !important;
+}
+
+.register-input:hover {
+  border-color: rgba(196, 181, 253, 0.5) !important;
+}
+
+.register-input:focus {
+  border-color: #a78bfa !important;
+  background-color: #15141b !important;
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2) !important;
+}
+
+/*
+ * Customer pages share older light-surface utility classes. Re-map those
+ * classes only under the signed-in customer shell so every customer route
+ * follows the dark-violet portal theme without changing vendor/admin screens.
+ */
+.customer-portal-theme .bg-white {
+  background-color: #19191f !important;
+}
+
+.customer-portal-theme .bg-surface {
+  background-color: #19191f !important;
+}
+
+.customer-portal-theme .bg-surface-sunken {
+  background-color: #141419 !important;
+}
+
+.customer-portal-theme .bg-surface-hover {
+  background-color: #25232d !important;
+}
+
+.customer-portal-theme .bg-brand-soft,
+.customer-portal-theme .bg-brand-muted {
+  background-color: rgba(167, 139, 250, 0.14) !important;
+}
+
+.customer-portal-theme .bg-success-soft {
+  background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+.customer-portal-theme .bg-warning-soft {
+  background-color: rgba(251, 191, 36, 0.12) !important;
+}
+
+.customer-portal-theme .bg-danger-soft {
+  background-color: rgba(248, 113, 113, 0.12) !important;
+}
+
+.customer-portal-theme .bg-ink {
+  background-color: #19191f !important;
+}
+
+.customer-portal-theme .bg-info-soft {
+  background-color: rgba(56, 189, 248, 0.12) !important;
+}
+
+.customer-portal-theme .text-ink {
+  color: #fff !important;
+}
+
+.customer-portal-theme .text-body {
+  color: rgba(255, 255, 255, 0.76) !important;
+}
+
+.customer-portal-theme .text-muted {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+
+.customer-portal-theme .text-subtle {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.customer-portal-theme .text-brand-deep,
+.customer-portal-theme .text-brand-strong,
+.customer-portal-theme .text-brand-800 {
+  color: #c4b5fd !important;
+}
+
+.customer-portal-theme .text-success {
+  color: #6ee7b7 !important;
+}
+
+.customer-portal-theme .text-warning {
+  color: #fcd34d !important;
+}
+
+.customer-portal-theme .text-danger {
+  color: #fca5a5 !important;
+}
+
+.customer-portal-theme .text-info {
+  color: #7dd3fc !important;
+}
+
+.customer-portal-theme .text-gray-200 {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.customer-portal-theme .border-hairline,
+.customer-portal-theme .border-hairline-strong {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.customer-portal-theme .border-brand-line {
+  border-color: rgba(196, 181, 253, 0.32) !important;
+}
+
+.customer-portal-theme .border-success\/30 {
+  border-color: rgba(52, 211, 153, 0.3) !important;
+}
+
+.customer-portal-theme .border-warning\/30 {
+  border-color: rgba(251, 191, 36, 0.3) !important;
+}
+
+.customer-portal-theme .border-danger\/30 {
+  border-color: rgba(248, 113, 113, 0.3) !important;
+}
+
+.customer-portal-theme input.bg-white,
+.customer-portal-theme textarea.bg-white,
+.customer-portal-theme select.bg-white {
+  background-color: #101014 !important;
+  color: #fff !important;
+}
+
+.customer-portal-theme input.bg-white::placeholder,
+.customer-portal-theme textarea.bg-white::placeholder {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.customer-portal-theme input.bg-white:disabled,
+.customer-portal-theme textarea.bg-white:disabled,
+.customer-portal-theme select.bg-white:disabled {
+  background-color: #19191f !important;
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/*
+ * Staff portals share the charcoal/violet customer and sign-in palette while
+ * preserving their own navigation and operational layouts.
+ */
+.staff-portal-theme .bg-white,
+.staff-portal-theme .bg-surface {
+  background-color: #19191f !important;
+}
+
+.staff-portal-theme .bg-surface-sunken {
+  background-color: #141419 !important;
+}
+
+.staff-portal-theme .bg-surface-hover {
+  background-color: #25232d !important;
+}
+
+.staff-portal-theme .bg-brand-soft,
+.staff-portal-theme .bg-brand-muted {
+  background-color: rgba(167, 139, 250, 0.14) !important;
+}
+
+.staff-portal-theme .bg-success-soft {
+  background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+.staff-portal-theme .bg-warning-soft {
+  background-color: rgba(251, 191, 36, 0.12) !important;
+}
+
+.staff-portal-theme .bg-danger-soft {
+  background-color: rgba(248, 113, 113, 0.12) !important;
+}
+
+.staff-portal-theme .bg-info-soft {
+  background-color: rgba(56, 189, 248, 0.12) !important;
+}
+
+.staff-portal-theme .text-ink {
+  color: #fff !important;
+}
+
+.staff-portal-theme .text-body {
+  color: rgba(255, 255, 255, 0.76) !important;
+}
+
+.staff-portal-theme .text-muted {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+
+.staff-portal-theme .text-subtle {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.staff-portal-theme .text-brand-deep,
+.staff-portal-theme .text-brand-strong,
+.staff-portal-theme .text-brand-800 {
+  color: #c4b5fd !important;
+}
+
+.staff-portal-theme .text-success {
+  color: #6ee7b7 !important;
+}
+
+.staff-portal-theme .text-warning {
+  color: #fcd34d !important;
+}
+
+.staff-portal-theme .text-danger {
+  color: #fca5a5 !important;
+}
+
+.staff-portal-theme .text-info {
+  color: #7dd3fc !important;
+}
+
+.staff-portal-theme .border-hairline,
+.staff-portal-theme .border-hairline-strong {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+.staff-portal-theme .border-brand-line {
+  border-color: rgba(196, 181, 253, 0.32) !important;
+}
+
+.staff-portal-theme input.bg-white,
+.staff-portal-theme textarea.bg-white,
+.staff-portal-theme select.bg-white {
+  background-color: #101014 !important;
+  color: #fff !important;
+}
+
+.staff-portal-theme input.bg-white::placeholder,
+.staff-portal-theme textarea.bg-white::placeholder {
+  color: rgba(255, 255, 255, 0.4) !important;
+}
+
+.staff-portal-theme input.bg-white:disabled,
+.staff-portal-theme textarea.bg-white:disabled,
+.staff-portal-theme select.bg-white:disabled {
+  background-color: #19191f !important;
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.staff-portal-theme {
+  background-image:
+    radial-gradient(ellipse at 10% 0%, rgba(124, 58, 237, 0.07), transparent 34%),
+    radial-gradient(ellipse at 96% 24%, rgba(88, 28, 135, 0.045), transparent 28%);
+}
+
+.customer-portal-theme {
+  background-image:
+    radial-gradient(ellipse at 12% 0%, rgba(124, 58, 237, 0.08), transparent 36%),
+    radial-gradient(ellipse at 92% 35%, rgba(88, 28, 135, 0.05), transparent 30%);
+}
+
+/*
+ * Flat panel: hairline border, no blur. backdrop-filter was costing a full
+ * repaint on every scroll frame for a subtle effect.
+ */
+.glass-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  box-shadow: none;
+}
+
+/*
+ * 44px is the minimum comfortable tap target (Apple HIG / WCAG 2.5.5). The
+ * header, sidebar and stepper controls were previously as small as 24px, which
+ * is fiddly to hit on a phone -- the primary device for this app.
+ */
+.tap-target {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/*
+ * Page transition. Kept because it aids orientation between routes, but
+ * shortened to 180ms and reduced to a 4px rise -- the previous 350ms/8px read
+ * as sluggish on a page you navigate back and forth between.
+ */
+.page-enter {
+  animation: pageEnter 0.18s ease-out both;
+}
+
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Toasts and modal panels: a short 150ms slide, no bounce. */
+@keyframes slideUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.animate-slide-up { animation: slideUp 0.15s ease-out; }
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in { animation: fadeIn 0.15s ease-out; }
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-rise-in { animation: riseIn 0.18s ease-out both; }
+
+/*
+ * The infinite pulse-ring was removed. It drew attention to itself rather than
+ * to the status it was meant to communicate, and it never stopped moving.
+ * Status is now communicated with color and a text label, both of which are
+ * also available to users who cannot perceive motion.
+ */
+
+/*
+ * Respect the OS "reduce motion" setting. The app ships entrance animations on
+ * every route plus toasts and modals; for users who opt out, movement is
+ * suppressed rather than merely shortened, since vestibular triggers are about
+ * the motion itself.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+  On a phone the card is top-aligned instead of centred: with `align-items: center`
+  a short form plus a tall keyboard pushed the submit button under the keyboard,
+  and centring leaves the top and bottom of the shell unreachable.
+
+  The gutters keep the max() form. This override used to hardcode
+  `padding: 1rem 0.75rem`, which silently discarded every safe-area inset from
+  the rule above -- and it applies to exactly the devices that have notches and
+  home indicators, so the sign-in card was the one screen guaranteed to ignore
+  them. Only the base gutter shrinks here; the env() floors stay.
+*/
+@media (max-width: 640px) {
+  .auth-page-shell {
+    align-items: flex-start;
+    padding:
+      max(1rem, env(safe-area-inset-top))
+      max(0.75rem, env(safe-area-inset-right))
+      max(1rem, env(safe-area-inset-bottom))
+      max(0.75rem, env(safe-area-inset-left));
+  }
+}

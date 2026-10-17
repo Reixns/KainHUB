@@ -1,0 +1,18 @@
+node_modules/
+dist/
+
+# Local env files - never commit real credentials
+.env*
+!.env.example
+!.env.sample
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

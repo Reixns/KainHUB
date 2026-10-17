@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Send, Store, Utensils, MessageSquare, FileText, MapPin, Phone, CreditCard, Package, ImagePlus, X, Search, Reply, SmilePlus, Info, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
@@ -204,13 +204,11 @@ export default function Chat() {
 
   const latestMessageId = activeChat?.messages.at(-1)?.id;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = messagesRef.current;
     if (!container) return;
-    requestAnimationFrame(() => {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-    });
-  }, [activeChatId, latestMessageId]);
+    container.scrollTop = container.scrollHeight;
+  }, [activeChatId, latestMessageId, mobileShowConversations]);
 
   const counterpart = useMemo(() => {
     if (!activeChat) return null;

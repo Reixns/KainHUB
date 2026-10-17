@@ -2,6 +2,12 @@
 
 Marketplace app built with React, Vite, and Supabase.
 
+## Live deployment
+
+- App: <https://kainhub-cyan.vercel.app>
+- GitHub: <https://github.com/Reixns/KainHUB>
+- Vercel project: `kainhub`, connected to the `main` branch
+
 ## Local development
 
 Use Node.js 22.12 or newer in the Node 22 line, and npm. Install dependencies
@@ -32,47 +38,36 @@ Never put a Supabase `service_role` or secret key in a `VITE_*` variable. Vite
 embeds `VITE_*` values in the browser bundle. Local `.env*` files are ignored by
 Git; `.env.example` contains placeholders only.
 
-## Publish to GitHub
+## Publish changes
 
-1. Create an empty **public** repository named `Reixns/KainHUB` on GitHub.
-   Do not add a README, `.gitignore`, or license during repository creation.
-2. Install Git for Windows if `git --version` is not available. From this
-   project folder, initialize Git if needed, commit the project, and push the
-   `main` branch:
+The public repository is [`Reixns/KainHUB`](https://github.com/Reixns/KainHUB)
+and is already connected to Vercel. After making changes, check that no local
+environment files are staged, then commit and push:
 
-   ```powershell
-   git init -b main
-   git add .
-   git status --short
-   git commit -m "Prepare KainHUB for deployment"
-   git remote add origin https://github.com/Reixns/KainHUB.git
-   git push -u origin main
-   ```
-
-   Before committing, confirm `.env` is not listed by `git status --short`.
-   If this folder already has an `origin`, update it with
-   `git remote set-url origin https://github.com/Reixns/KainHUB.git` instead.
-3. GitHub Actions automatically runs `npm ci`, lint, type-check, and production
-   build for pushes to `main`/`master` and pull requests.
+```powershell
+git status --short
+git add .
+git status --short
+git commit -m "Describe your change"
+git push
+```
 
 ## Deploy to Vercel
 
-1. Import the GitHub repository in Vercel and select the Vite project.
-2. Keep the project root at the repository root. The checked-in
-   [`vercel.json`](./vercel.json) configures `npm run build`, `dist`, and SPA
-   route rewrites.
-3. In **Project Settings → Environment Variables**, add these for Production,
-   Preview, and Development as needed:
-   - `VITE_SUPABASE_URL` — the Supabase project URL, e.g.
-     `https://your-project-ref.supabase.co`
-   - `VITE_SUPABASE_ANON_KEY` — the Supabase anon/publishable browser key
-4. Redeploy after changing environment variables. Vercel will build and deploy
-   each push to the connected production branch; other branches/PRs get preview
-   deployments.
-5. In **Supabase → Authentication → URL Configuration**, set the production
-   Vercel URL as the Site URL and add the production and preview app URLs to
-   Redirect URLs. Also add `http://localhost:5173/**` for local testing. Add a
-   custom domain URL there too if you use one.
+The [`kainhub` Vercel project](https://vercel.com) uses the repository root,
+`npm run build`, and `dist`; [`vercel.json`](./vercel.json) also rewrites SPA
+routes. Production deploys automatically from `main`; other branches receive
+preview deployments. The Supabase URL and publishable browser key are configured
+for Production and Preview in Vercel.
+
+In **Supabase → Authentication → URL Configuration**, keep the Site URL set to
+`https://kainhub-cyan.vercel.app` and allow these redirect URLs:
+
+```text
+https://kainhub-cyan.vercel.app/**
+https://kainhub-*-reianromasanta09-9537s-projects.vercel.app/**
+http://localhost:5173/**
+```
 
 Do not add Supabase credentials to GitHub Actions secrets for this workflow:
 the CI build does not need live credentials. Configure them in Vercel instead.

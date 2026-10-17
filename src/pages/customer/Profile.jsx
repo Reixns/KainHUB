@@ -64,7 +64,7 @@ export default function CustomerProfile() {
           <Avatar
             name={user.fullName}
             size="xl"
-            className="border-4 border-white"
+            className="mx-auto border-4 border-white"
           />
           <h2 className="text-xl font-bold text-ink mt-3">{user.fullName}</h2>
           <p className="text-sm text-muted">{user.email}</p>

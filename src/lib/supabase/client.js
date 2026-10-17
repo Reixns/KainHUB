@@ -98,7 +98,9 @@ export function getSupabaseClient(role = 'customer') {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        // Reset callbacks exchange their one-time PKCE code in AppContext so
+        // the recovery session is ready before the password form is rendered.
+        detectSessionInUrl: typeof window === 'undefined' || window.location.pathname !== '/reset-password',
         // The default implicit flow returns a token in the URL fragment, which
         // expires sooner and leaves the credential in browser history. PKCE
         // keeps long-lived sessions from lapsing while a tab sits open.

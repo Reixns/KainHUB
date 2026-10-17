@@ -447,7 +447,30 @@ export function AppProvider({ children }) {
       sessionStorage.setItem(ACTIVE_PORTAL_KEY, role);
       setAuthReady(false);
       currentClient = getSupabaseClient(role);
-      const { data, error } = await currentClient.auth.getSession();
+      const recoveryUrl = isResetPath ? new URL(window.location.href) : null;
+      const recoveryCode = recoveryUrl?.searchParams.get('code');
+      let recoverySession = null;
+      if (recoveryCode) {
+        recoveryUrl.searchParams.delete('code');
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${recoveryUrl.pathname}${recoveryUrl.search}${recoveryUrl.hash}`,
+        );
+        const recovery = await currentClient.auth.exchangeCodeForSession(recoveryCode);
+        if (watchId !== authWatchIdRef.current) return;
+        if (recovery.error || !recovery.data?.session) {
+          setRemoteUser(null);
+          setAuth({ user: null, role: null });
+          setAuthError(`Unable to verify your password reset link: ${recovery.error?.message || 'No recovery session was returned.'}`);
+          setAuthReady(true);
+          return;
+        }
+        recoverySession = recovery.data.session;
+      }
+      const { data, error } = recoverySession
+        ? { data: { session: recoverySession }, error: null }
+        : await currentClient.auth.getSession();
       if (watchId !== authWatchIdRef.current) return;
       if (error) {
         setRemoteUser(null);

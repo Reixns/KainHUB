@@ -150,6 +150,8 @@ export function AppProvider({ children }) {
   const [authReady, setAuthReady] = useState(!supabase);
   const refreshInFlightRef = useRef(false);
   const orderStatusWritesRef = useRef(new Set());
+  const [savingOrderIds, setSavingOrderIds] = useState(() => new Set());
+  const [ordersRealtimeStatus, setOrdersRealtimeStatus] = useState('connecting');
   const authWatchIdRef = useRef(0);
   const lastNotificationIdRef = useRef(0);
   // The signed-in account as of the last render, readable from inside async
@@ -633,12 +635,23 @@ export function AppProvider({ children }) {
   // the periodic refresh below. Re-read the joined rows so status changes and
   // their item details are reconciled together.
   useEffect(() => {
-    if (!isSupabaseConfigured || !remoteUser?.id || !auth.role) return undefined;
+    if (!isSupabaseConfigured) {
+      setOrdersRealtimeStatus('local');
+      return undefined;
+    }
+    if (!remoteUser?.id || !auth.role) {
+      setOrdersRealtimeStatus('disconnected');
+      return undefined;
+    }
     const client = getSupabaseClient(auth.role);
-    if (!client) return undefined;
+    if (!client) {
+      setOrdersRealtimeStatus('disconnected');
+      return undefined;
+    }
 
     let active = true;
     let refreshTimer = null;
+    setOrdersRealtimeStatus('connecting');
     const refreshOrders = async () => {
       try {
         const remoteOrders = await loadRemoteOrders(remoteUser.id, auth.role);
@@ -677,14 +690,21 @@ export function AppProvider({ children }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, queueRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, queueRefresh)
       .subscribe((status, error) => {
-        if (status === 'SUBSCRIBED') void refreshOrders();
+        if (status === 'SUBSCRIBED') {
+          setOrdersRealtimeStatus('connected');
+          void refreshOrders();
+        }
         else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setOrdersRealtimeStatus('reconnecting');
           console.error(`[orders] Realtime subscription ${status.toLowerCase()}:`, error?.message || 'connection unavailable');
+        } else if (status === 'CLOSED') {
+          setOrdersRealtimeStatus('disconnected');
         }
       });
 
     return () => {
       active = false;
+      setOrdersRealtimeStatus('disconnected');
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
       void client.removeChannel(channel);
     };
@@ -1445,21 +1465,22 @@ export function AppProvider({ children }) {
 
   const updateOrderStatus = useCallback(async (orderId, newStatus) => {
     const order = orders.find((item) => String(item.id) === String(orderId));
-    if (!order) return;
+    if (!order) return false;
     if (auth.role !== 'vendor' && auth.role !== 'admin') {
       showToast('Only the shop can update this order status.', 'error');
-      return;
+      return false;
     }
     const allowedStatuses = ORDER_STATUS_TRANSITIONS[order.status] || [];
     const fulfillmentAllowsTransition = order.status !== 'READY'
       || (order.fulfillment === 'DELIVERY' ? newStatus === 'OUT FOR DELIVERY' : newStatus === 'COMPLETED');
     if (!allowedStatuses.includes(newStatus) || !fulfillmentAllowsTransition) {
       showToast('This order status can no longer be changed from its current state.', 'error');
-      return;
+      return false;
     }
     const orderKey = String(order.id);
-    if (orderStatusWritesRef.current.has(orderKey)) return;
+    if (orderStatusWritesRef.current.has(orderKey)) return false;
     orderStatusWritesRef.current.add(orderKey);
+    setSavingOrderIds((current) => new Set(current).add(orderKey));
     const now = new Date().toISOString();
     const updatedOrder = {
       ...order,
@@ -1498,31 +1519,39 @@ export function AppProvider({ children }) {
           String(vendor.id) === String(order.vendorId) ? { ...vendor, queue: remainingQueue } : vendor
         )));
       }
+      return true;
     } catch (error) {
       console.error('[orders] status save failed:', error);
       setOrders((current) => current.map((item) => (
         String(item.id) === orderKey && item.updatedAt === now ? order : item
       )));
       showToast(error instanceof Error ? error.message : 'Order status could not be saved. Please retry.', 'error');
+      return false;
     } finally {
       orderStatusWritesRef.current.delete(orderKey);
+      setSavingOrderIds((current) => {
+        const next = new Set(current);
+        next.delete(orderKey);
+        return next;
+      });
     }
   }, [orders, addNotification, showToast, remoteUser, auth.role]);
 
   const rejectOrder = useCallback(async (orderId, reason) => {
     const order = orders.find((item) => String(item.id) === String(orderId));
-    if (!order) return;
+    if (!order) return false;
     if (auth.role !== 'vendor' && auth.role !== 'admin') {
       showToast('Only the shop can reject this order.', 'error');
-      return;
+      return false;
     }
     if (order.status !== 'RECEIVED') {
       showToast('Only newly received orders can be rejected.', 'error');
-      return;
+      return false;
     }
     const orderKey = String(order.id);
-    if (orderStatusWritesRef.current.has(orderKey)) return;
+    if (orderStatusWritesRef.current.has(orderKey)) return false;
     orderStatusWritesRef.current.add(orderKey);
+    setSavingOrderIds((current) => new Set(current).add(orderKey));
     const now = new Date().toISOString();
     const rejectionReason = reason?.trim() || 'Unavailable';
     const updatedOrder = {
@@ -1560,14 +1589,21 @@ export function AppProvider({ children }) {
           ? { ...vendor, queue: Math.max(0, (Number(vendor.queue) || 0) - 1) }
           : vendor
       )));
+      return true;
     } catch (error) {
       console.error('[orders] status save failed:', error);
       setOrders((current) => current.map((item) => (
         String(item.id) === orderKey && item.updatedAt === now ? order : item
       )));
       showToast(error instanceof Error ? error.message : 'Order rejection could not be saved. Please retry.', 'error');
+      return false;
     } finally {
       orderStatusWritesRef.current.delete(orderKey);
+      setSavingOrderIds((current) => {
+        const next = new Set(current);
+        next.delete(orderKey);
+        return next;
+      });
     }
   }, [orders, addNotification, showToast, remoteUser, auth.role]);
 
@@ -1787,6 +1823,8 @@ export function AppProvider({ children }) {
     auth,
       authError,
     authReady,
+      ordersRealtimeStatus,
+      savingOrderIds,
     vendors,
     customers,
     admins,

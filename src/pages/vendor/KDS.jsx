@@ -4,7 +4,7 @@ import { useApp } from '@/context/AppContext';
 import { Card, Badge, Button, StatusBadge, formatPeso, Tabs, formatDateTime, formatQueue, LogoMark } from '@/components/UI';
 
 export default function VendorKDS() {
-  const { auth, orders, updateOrderStatus, rejectOrder } = useApp();
+  const { auth, orders, updateOrderStatus, rejectOrder, savingOrderIds, ordersRealtimeStatus } = useApp();
   const vendorId = auth.user.id;
 
   const myOrders = orders.filter((o) => (
@@ -40,6 +40,7 @@ export default function VendorKDS() {
           <h1 className="text-2xl font-bold text-ink tracking-tight">Kitchen Display</h1>
           <p className="text-sm text-muted">Move each ticket through to pickup or delivery.</p>
         </div>
+        <RealtimeStatus status={ordersRealtimeStatus} />
       </div>
 
       <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} label="Order status" />
@@ -53,7 +54,14 @@ export default function VendorKDS() {
           </Card>
         ) : (
           filtered.map((order) => (
-            <OrderCard key={order.id} order={order} shop={auth.user} onUpdate={updateOrderStatus} onReject={rejectOrder} />
+            <OrderCard
+              key={order.id}
+              order={order}
+              shop={auth.user}
+              onUpdate={updateOrderStatus}
+              onReject={rejectOrder}
+              saving={savingOrderIds.has(String(order.id))}
+            />
           ))
         )}
       </div>
@@ -61,7 +69,7 @@ export default function VendorKDS() {
   );
 }
 
-function OrderCard({ order, shop, onUpdate, onReject }) {
+function OrderCard({ order, shop, onUpdate, onReject, saving }) {
   const [showReject, setShowReject] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -199,9 +207,16 @@ function OrderCard({ order, shop, onUpdate, onReject }) {
                 size="sm"
                 variant="danger"
                 full
-                onClick={() => { onReject(order.id, rejectReason || 'Unavailable'); setShowReject(false); setRejectReason(''); }}
+                loading={saving}
+                onClick={async () => {
+                  const saved = await onReject(order.id, rejectReason || 'Unavailable');
+                  if (saved) {
+                    setShowReject(false);
+                    setRejectReason('');
+                  }
+                }}
               >
-                Reject order
+                {saving ? 'Saving rejection...' : 'Reject order'}
               </Button>
             </div>
           </div>
@@ -212,13 +227,42 @@ function OrderCard({ order, shop, onUpdate, onReject }) {
             size="lg"
             variant={order.status === 'PREPARING' || order.status === 'READY' || order.status === 'OUT FOR DELIVERY' ? 'success' : 'primary'}
             full
+            loading={saving}
             onClick={() => onUpdate(order.id, nextAction.status)}
           >
-            {nextAction.icon} {nextAction.label}
+            {saving ? 'Saving status...' : <>{nextAction.icon} {nextAction.label}</>}
           </Button>
         )}
       </div>
     </Card>
+  );
+}
+
+function RealtimeStatus({ status }) {
+  const connected = status === 'connected';
+  const local = status === 'local';
+  const label = connected
+    ? 'Live updates connected'
+    : status === 'reconnecting'
+      ? 'Reconnecting to live updates...'
+      : local
+        ? 'Local mode — orders are not shared'
+        : 'Connecting to live updates...';
+  return (
+    <div
+      className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${
+        connected
+          ? 'bg-success-soft text-success'
+          : local
+            ? 'bg-warning-soft text-warning'
+            : 'bg-surface-sunken text-muted'
+      }`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className={`h-2 w-2 rounded-full ${connected ? 'bg-success' : local ? 'bg-warning' : 'bg-muted'}`} aria-hidden="true" />
+      {label}
+    </div>
   );
 }
 

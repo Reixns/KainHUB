@@ -5,7 +5,7 @@ import { useApp } from '@/context/AppContext';
 import { Card, Badge, Button, StatusBadge, formatPeso, Tabs, formatDateTime, EmptyState, Modal, Textarea, formatQueue, LogoMark } from '@/components/UI';
 
 export default function VendorOrders() {
-  const { auth, orders, updateOrderStatus, rejectOrder } = useApp();
+  const { auth, orders, updateOrderStatus, rejectOrder, savingOrderIds } = useApp();
   const vendorId = auth.user.id;
   const myOrders = orders.filter((o) => (
     String(o.vendorId) === String(vendorId) || String(o.vendorId) === String(auth.user.ownerId)
@@ -38,7 +38,9 @@ export default function VendorOrders() {
         {displayed.length === 0 ? (
           <EmptyState title="No orders found" description="Orders will appear here." />
         ) : (
-          displayed.map((order) => (
+          displayed.map((order) => {
+            const saving = savingOrderIds.has(String(order.id));
+            return (
             <Card key={order.id} className="p-4">
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div>
@@ -59,8 +61,8 @@ export default function VendorOrders() {
                   </Button>
                   {order.status === 'RECEIVED' && (
                     <>
-                      <Button size="sm" onClick={() => updateOrderStatus(order.id, 'PREPARING')}>
-                        <ChefHat className="w-4 h-4" /> Accept
+                      <Button size="sm" loading={saving} onClick={() => updateOrderStatus(order.id, 'PREPARING')}>
+                        {saving ? 'Saving status...' : <><ChefHat className="w-4 h-4" /> Accept</>}
                       </Button>
                       <Button size="sm" variant="danger" onClick={() => setRejecting(order)}>
                         <X className="w-4 h-4" />
@@ -68,29 +70,30 @@ export default function VendorOrders() {
                     </>
                   )}
                   {order.status === 'PREPARING' && (
-                    <Button size="sm" variant="success" onClick={() => updateOrderStatus(order.id, 'READY')}>
-                      <Check className="w-4 h-4" /> Ready
+                    <Button size="sm" variant="success" loading={saving} onClick={() => updateOrderStatus(order.id, 'READY')}>
+                      {saving ? 'Saving status...' : <><Check className="w-4 h-4" /> Ready</>}
                     </Button>
                   )}
                   {order.status === 'READY' && order.fulfillment === 'DELIVERY' && (
-                    <Button size="sm" onClick={() => updateOrderStatus(order.id, 'OUT FOR DELIVERY')}>
-                      <Truck className="w-4 h-4" /> Out for Delivery
+                    <Button size="sm" loading={saving} onClick={() => updateOrderStatus(order.id, 'OUT FOR DELIVERY')}>
+                      {saving ? 'Saving status...' : <><Truck className="w-4 h-4" /> Out for Delivery</>}
                     </Button>
                   )}
                   {order.status === 'READY' && order.fulfillment === 'PICKUP' && (
-                    <Button size="sm" variant="success" onClick={() => updateOrderStatus(order.id, 'COMPLETED')}>
-                      <Package className="w-4 h-4" /> Complete
+                    <Button size="sm" variant="success" loading={saving} onClick={() => updateOrderStatus(order.id, 'COMPLETED')}>
+                      {saving ? 'Saving status...' : <><Package className="w-4 h-4" /> Complete</>}
                     </Button>
                   )}
                   {order.status === 'OUT FOR DELIVERY' && (
-                    <Button size="sm" variant="success" onClick={() => updateOrderStatus(order.id, 'COMPLETED')}>
-                      <Check className="w-4 h-4" /> Complete
+                    <Button size="sm" variant="success" loading={saving} onClick={() => updateOrderStatus(order.id, 'COMPLETED')}>
+                      {saving ? 'Saving status...' : <><Check className="w-4 h-4" /> Complete</>}
                     </Button>
                   )}
                 </div>
               </div>
             </Card>
-          ))
+            );
+          })
         )}
       </div>
 
@@ -144,8 +147,21 @@ export default function VendorOrders() {
       <Modal open={!!rejecting} onClose={() => { setRejecting(null); setRejectReason(''); }} title="Reject Order" size="sm"
         footer={
           <>
-            <Button variant="ghost" onClick={() => { setRejecting(null); setRejectReason(''); }}>Cancel</Button>
-            <Button variant="danger" onClick={() => { if (rejectReason) { rejectOrder(rejecting.id, rejectReason); setRejecting(null); setRejectReason(''); } }}>Reject Order</Button>
+            <Button variant="ghost" disabled={rejecting && savingOrderIds.has(String(rejecting.id))} onClick={() => { setRejecting(null); setRejectReason(''); }}>Cancel</Button>
+            <Button
+              variant="danger"
+              loading={rejecting && savingOrderIds.has(String(rejecting.id))}
+              onClick={async () => {
+                if (!rejectReason || !rejecting) return;
+                const saved = await rejectOrder(rejecting.id, rejectReason);
+                if (saved) {
+                  setRejecting(null);
+                  setRejectReason('');
+                }
+              }}
+            >
+              Reject Order
+            </Button>
           </>
         }
       >

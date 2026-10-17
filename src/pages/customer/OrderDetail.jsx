@@ -1,8 +1,8 @@
-import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, CheckCheck, Clock, ChefHat, Package, Truck, MapPin, Home, MessageSquare, CheckCircle2, Star } from 'lucide-react';
+import { ArrowLeft, Check, CheckCheck, Clock, ChefHat, Package, Truck, MapPin, Home, MessageSquare, CheckCircle2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, StatusBadge, formatPeso, formatDateTime, formatQueue, LogoMark } from '@/components/UI';
+import ShopRatingForm from '@/components/ShopRatingForm';
 import { ORDER_STATUSES_DELIVERY, ORDER_STATUSES_PICKUP } from '@/data/mockData';
 
 export default function CustomerOrderDetail() {
@@ -69,12 +69,9 @@ export default function CustomerOrderDetail() {
       </Card>
 
       {order.status === 'COMPLETED' && (
-        <OrderShopRating
-          order={order}
-          savedRating={savedRating}
-          rateShop={rateShop}
-          shop={vendor}
-        />
+        <Card className="mb-4 overflow-hidden p-0">
+          <ShopRatingForm order={order} savedRating={savedRating} rateShop={rateShop} shop={vendor} />
+        </Card>
       )}
 
       <div className="lg:grid lg:grid-cols-[1fr_20rem] lg:gap-6 lg:items-start">
@@ -190,83 +187,6 @@ export default function CustomerOrderDetail() {
  * markers and fills to the current step, which is easier to read at a glance
  * than five independently coloured circles.
  */
-function OrderShopRating({ order, savedRating, rateShop, shop }) {
-  const [selected, setSelected] = useState(0);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const submitRating = async () => {
-    if (!selected || saving || savedRating) return;
-    setSaving(true);
-    setError('');
-    try {
-      const result = await rateShop(order.id, selected);
-      if (!result.success) setError(result.message);
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Unable to save your rating.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Card className="p-4 mb-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="font-semibold text-ink">Rate {order.vendorName}</h2>
-          <p className="text-sm text-muted mt-1">
-            {savedRating
-              ? 'Thanks for sharing your experience.'
-              : 'Your order is complete. How was your experience?'}
-          </p>
-          {shop && (
-            <p className="text-xs text-muted mt-2">
-              Shop rating: {Number(shop.rating || 0).toFixed(1)}
-              {Number(shop.ratingCount) > 0 ? ` (${shop.ratingCount} ${shop.ratingCount === 1 ? 'rating' : 'ratings'})` : ' (no ratings yet)'}
-            </p>
-          )}
-        </div>
-        {savedRating && (
-          <span className="inline-flex items-center gap-1 text-sm font-medium text-ink" aria-label={`You rated this shop ${savedRating.rating} out of 5 stars`}>
-            <Star className="h-4 w-4 fill-amber-300 text-amber-300" aria-hidden="true" />
-            {savedRating.rating}/5
-          </span>
-        )}
-      </div>
-
-      {!savedRating && (
-        <>
-          <div className="mt-3 flex items-center gap-1" role="group" aria-label="Choose a rating from 1 to 5 stars">
-            {[1, 2, 3, 4, 5].map((score) => (
-              <button
-                key={score}
-                type="button"
-                className="tap-target rounded-full text-amber-400 hover:bg-surface-hover disabled:cursor-not-allowed"
-                aria-label={`${score} ${score === 1 ? 'star' : 'stars'}`}
-                aria-pressed={selected === score}
-                disabled={saving}
-                onClick={() => setSelected(score)}
-              >
-                <Star className={`h-6 w-6 ${score <= selected ? 'fill-amber-300 text-amber-300' : 'text-hairline-strong'}`} aria-hidden="true" />
-              </button>
-            ))}
-          </div>
-          <Button
-            className="mt-3"
-            size="sm"
-            disabled={!selected || saving}
-            loading={saving}
-            onClick={submitRating}
-          >
-            Submit rating
-          </Button>
-          {error && <p className="mt-2 text-sm text-danger" role="alert">{error}</p>}
-        </>
-      )}
-    </Card>
-  );
-}
-
 function ProgressTracker({ statuses, currentIdx, fulfillment }) {
   // REJECTED/CANCELLED are not in the status lists, so indexOf returns -1 and
   // the unfilled formula produced width: -25%, which the browser drops.

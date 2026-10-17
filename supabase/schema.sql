@@ -579,6 +579,7 @@ begin
   set rating = ((rating * rating_count + p_rating)::numeric / (rating_count + 1)),
       rating_count = rating_count + 1
   where legacy_id = v_vendor_legacy_id
+     or (legacy_id is null and id = v_vendor_legacy_id)
   returning rating, rating_count into v_rating, v_rating_count;
 
   if not found then

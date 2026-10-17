@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Send, Store, Utensils, MessageSquare, FileText, MapPin, Phone, CreditCard, Package, ImagePlus, X, Search, Reply, SmilePlus, Info, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Avatar, Button, Card, EmptyState, getProductImage, formatPeso, formatDateTime, formatQueue, StatusBadge, timeAgo, isImageSource, isEmojiSource, Modal } from '@/components/UI';
+import ShopRatingForm from '@/components/ShopRatingForm';
 import { ORDER_STATUSES_DELIVERY, ORDER_STATUSES_PICKUP } from '@/data/mockData';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -34,7 +35,20 @@ export default function Chat() {
     `orders` is read so the receipt card can resolve the live row instead of the
     frozen snapshot the message carries. See `liveOrdersById`.
   */
-  const { auth, chats, vendors, customers, orders, getOrCreateChat, sendChatMessage, sendChatMenu, toggleChatReaction, uploadMediaFile } = useApp();
+  const {
+    auth,
+    chats,
+    vendors,
+    customers,
+    orders,
+    shopRatings,
+    getOrCreateChat,
+    sendChatMessage,
+    sendChatMenu,
+    toggleChatReaction,
+    uploadMediaFile,
+    rateShop,
+  } = useApp();
   const [searchParams] = useSearchParams();
   const requestedChatId = searchParams.get('chatId');
   const requestedVendorId = Number(searchParams.get('vendorId')) || null;
@@ -739,6 +753,17 @@ export default function Chat() {
                             </div>
                           )}
                           </div>
+                          {auth.role === 'customer' && order.status === 'COMPLETED' && (
+                            <div className="border-t border-white/10">
+                              <ShopRatingForm
+                                order={order}
+                                savedRating={shopRatings.find((rating) => String(rating.orderNumber) === String(order.id))}
+                                shop={vendors.find((vendor) => String(vendor.id) === String(order.vendorId))}
+                                rateShop={rateShop}
+                                dark
+                              />
+                            </div>
+                          )}
                         </div>
                           );
                         })()

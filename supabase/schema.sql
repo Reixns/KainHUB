@@ -1235,13 +1235,12 @@ begin
   end if;
   if p_message is null
      or jsonb_typeof(p_message) <> 'object'
-     or nullif(p_message ->> 'id', '') is null
-     or sender_id <> caller_id::text then
+     or nullif(p_message ->> 'id', '') is null then
     raise exception 'Invalid chat message' using errcode = '22023';
   end if;
 
   if sender_role = 'customer' then
-    if p_customer_id <> caller_id then
+    if p_customer_id <> caller_id or sender_id <> p_customer_id::text then
       raise exception 'Customers may only send messages in their own chats' using errcode = '42501';
     end if;
   elsif sender_role = 'vendor' then
@@ -1249,6 +1248,7 @@ begin
       select 1 from public.vendors v
       where (v.legacy_id = p_vendor_legacy_id or v.id = p_vendor_legacy_id)
         and v.owner_id = caller_id
+        and coalesce(v.legacy_id, v.id)::text = sender_id
     ) then
       raise exception 'Vendor does not own this chat' using errcode = '42501';
     end if;

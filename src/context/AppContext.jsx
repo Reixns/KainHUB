@@ -31,11 +31,12 @@ import {
   loadRemoteOrders,
   loadRemoteChats,
   persistChatMessage,
+  persistShopRating,
   persistOrderStatus,
 } from '@/lib/supabase';
 
 import { STORAGE_KEY, LOCAL_AUTH_KEY, ACTIVE_PORTAL_KEY, PORTAL_CHANGE_EVENT, FEED_CHANNEL, loadState, saveState, normalizeChats, mergeChats, mergePosts, mergeOrders, mergeFavorites, mergeById, updateIfChanged, nextLocalId, updateIdentityRow, normalizeFavorites, favoriteKey, ORDER_NOTIFICATION_TTL_MS, isNotificationExpired, pruneExpiredNotifications } from '@/context/persistence';
-import { asNumber } from '@/lib/supabase/mappers';
+import { asNumber, mapShopRatings } from '@/lib/supabase/mappers';
 import { clearVendorLogoPin, hydrateLocalVendorOverlay, pinVendorLogo } from '@/lib/supabase/state';
 /*
   From lib/notifications, NOT from components/UI. UI.jsx imports useApp to render
@@ -108,6 +109,7 @@ export function AppProvider({ children }) {
   });
   const [cart, setCart] = useState(initialState?.cart || []);
   const [chats, setChats] = useState(normalizeChats(initialState?.chats || []));
+  const [shopRatings, setShopRatings] = useState(initialState?.shopRatings || []);
   const [favorites, setFavorites] = useState(normalizeFavorites([initialState?.favorites || []]));
   /*
     Favourites saved here but not yet confirmed by the server.
@@ -177,11 +179,11 @@ export function AppProvider({ children }) {
 
   // Persist state
   useEffect(() => {
-    saveState({ vendors, customers, orders, posts, notifications, platformSettings, cart, chats, favorites });
+    saveState({ vendors, customers, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites });
     if (!isSupabaseConfigured) {
       sessionStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(auth));
     }
-  }, [auth, vendors, customers, orders, posts, notifications, platformSettings, cart, chats, favorites]);
+  }, [auth, vendors, customers, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites]);
 
   /*
     The Supabase write is a second, debounced effect rather than sharing the
@@ -365,6 +367,11 @@ export function AppProvider({ children }) {
       }
       if (!active || watchId !== authWatchIdRef.current || !remote) return;
       remoteStateReadyRef.current = true;
+      if (role === 'customer' && remote.shopRatings !== null) {
+        setShopRatings(remote.shopRatings || []);
+      } else if (role !== 'customer') {
+        setShopRatings([]);
+      }
       if (role === 'admin') {
         setVendors(hydrateLocalVendorOverlay(remote.vendors || []));
       } else if (remote.vendors?.length) {
@@ -575,6 +582,9 @@ export function AppProvider({ children }) {
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
       }
+      if (auth.role === 'customer' && remote.shopRatings !== null) {
+        setShopRatings(remote.shopRatings || []);
+      }
       /*
         Merged on the refresh tick as well as at sign-in. Un-favouriting on another
         device has to reach this one, and a merge cannot do that on its own -- so
@@ -774,6 +784,42 @@ export function AppProvider({ children }) {
       active = false;
       setChatRealtimeStatus('disconnected');
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      void client.removeChannel(channel);
+    };
+  }, [auth.role, remoteUser]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !remoteUser?.id || auth.role !== 'customer') return undefined;
+    const client = getSupabaseClient(auth.role);
+    if (!client) return undefined;
+
+    const channel = client
+      .channel(`shop-ratings:${remoteUser.id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'vendors' }, ({ new: vendor }) => {
+        if (vendor?.legacy_id == null) return;
+        setVendors((current) => current.map((shop) => String(shop.id) === String(vendor.legacy_id)
+          ? {
+            ...shop,
+            rating: Number(vendor.rating) || 0,
+            ratingCount: Number(vendor.rating_count) || 0,
+          }
+          : shop));
+      })
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'shop_ratings',
+        filter: `customer_id=eq.${remoteUser.id}`,
+      }, ({ new: rating }) => {
+        if (!rating) return;
+        const mapped = mapShopRatings([rating])[0];
+        setShopRatings((current) => current.some((item) => String(item.orderNumber) === String(mapped.orderNumber))
+          ? current
+          : [mapped, ...current]);
+      })
+      .subscribe();
+
+    return () => {
       void client.removeChannel(channel);
     };
   }, [auth.role, remoteUser]);
@@ -1421,6 +1467,55 @@ export function AppProvider({ children }) {
       onRemoved: (row) => { pendingFavoritesRef.current.delete(favoriteKey(row)); },
     });
 
+  const rateShop = useCallback(async (orderNumber, rating) => {
+    const score = Number(rating);
+    if (auth.role !== 'customer' || !auth.user?.id) {
+      return { success: false, message: 'Sign in as a customer to rate a shop.' };
+    }
+    if (!Number.isInteger(score) || score < 1 || score > 5) {
+      return { success: false, message: 'Choose a rating from 1 to 5 stars.' };
+    }
+    const order = orders.find((item) => String(item.id) === String(orderNumber));
+    if (!order || String(order.customerId) !== String(auth.user.id)) {
+      return { success: false, message: 'This order does not belong to your account.' };
+    }
+    if (order.status !== 'COMPLETED') {
+      return { success: false, message: 'You can rate the shop after the order is completed.' };
+    }
+    if (shopRatings.some((item) => String(item.orderNumber) === String(order.id))) {
+      return { success: false, message: 'You have already rated this order.' };
+    }
+
+    let aggregate;
+    if (isSupabaseConfigured) {
+      try {
+        aggregate = await persistShopRating(order.id, score);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to save your rating. Please try again.';
+        console.error('[ratings] shop rating could not be saved:', error);
+        showToast(message, 'error');
+        return { success: false, message };
+      }
+    } else {
+      const shop = vendors.find((item) => String(item.id) === String(order.vendorId));
+      const count = Number(shop?.ratingCount) || 0;
+      aggregate = {
+        rating: ((Number(shop?.rating) || 0) * count + score) / (count + 1),
+        rating_count: count + 1,
+      };
+    }
+
+    const createdAt = new Date().toISOString();
+    setShopRatings((current) => current.some((item) => String(item.orderNumber) === String(order.id))
+      ? current
+      : [{ orderNumber: order.id, vendorId: order.vendorId, rating: score, createdAt }, ...current]);
+    setVendors((current) => current.map((shop) => String(shop.id) === String(order.vendorId)
+      ? { ...shop, rating: Number(aggregate.rating), ratingCount: Number(aggregate.rating_count) }
+      : shop));
+    showToast('Thanks for rating this shop!');
+    return { success: true };
+  }, [auth, orders, shopRatings, vendors, showToast]);
+
   // BUYER/VENDOR CHAT
   const { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction } = useChatActions({
     setChats,
@@ -1909,6 +2004,7 @@ export function AppProvider({ children }) {
     platformSettings,
     cart,
     chats,
+    shopRatings,
     favorites,
     toasts,
     // auth
@@ -1942,6 +2038,7 @@ export function AppProvider({ children }) {
     toggleChatReaction,
     // orders
     placeOrder,
+    rateShop,
     updateOrderStatus,
     rejectOrder,
     // vendor

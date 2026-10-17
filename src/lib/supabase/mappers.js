@@ -22,6 +22,8 @@ export const asNumber = (value) => {
 export const mapVendors = (rows) => (rows || []).map((v) => ({
   ...v,
   id: asNumber(v.legacy_id || v.id),
+  rating: Number.isFinite(Number(v.rating)) ? Number(v.rating) : 0,
+  ratingCount: Number.isFinite(Number(v.rating_count)) ? Number(v.rating_count) : 0,
   ownerId: v.owner_id,
   ownerName: v.owner_name,
   storeStatus: v.store_status,
@@ -111,6 +113,13 @@ export const mapChats = (rows) => (rows || []).map((chat) => ({
   customerId: chat.customer_id,
   messages: chat.messages || [],
   updatedAt: chat.updated_at,
+}));
+
+export const mapShopRatings = (rows) => (rows || []).map((rating) => ({
+  orderNumber: rating.order_number,
+  vendorId: asNumber(rating.vendor_legacy_id),
+  rating: Number(rating.rating),
+  createdAt: rating.created_at,
 }));
 
 /*

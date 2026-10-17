@@ -18,11 +18,9 @@
 --   if any part fails the database is left exactly as it was.
 --
 --   A run that would leave `public.favorites` missing, wrongly keyed, or without
---   the grants the client needs now FAILS and rolls back rather than reporting
---   success. See the post-condition block immediately before `commit`. That is
---   deliberate: that table being absent is what made favourites silently vanish
---   on reload, and it looked like a UI bug rather than a migration that had not
---   been applied.
+--   the grants the client needs, or leave ratings without their protected
+--   completed-order write path, FAILS and rolls back rather than reporting
+--   success. See the post-condition block immediately before `commit`.
 --
 --   It is NOT a teardown script. It never deletes application rows, truncates,
 --   drops application tables/columns, or weakens row level security. The only
@@ -41,12 +39,15 @@
 --   still choose delivery or pick-up at checkout, which is what
 --   `orders.fulfillment` records.
 --
--- WHERE FAVOURITES LIVE, IN THIS FILE
+-- WHERE FAVOURITES AND RATINGS LIVE, IN THIS FILE
 --   section 1  the canonical column list, which every table must match
 --   section 4  create table, plus the primary key the client's upsert needs
 --   section 7  row level security, enabled
 --   section 9  the owner-only policy
 --   section 10 the grants: authenticated only, and no UPDATE on purpose
+--   shop_ratings is created in section 3, limited to owner reads in section 11,
+--   and written only through the completed-order RPC; shop averages are streamed
+--   through vendors in section 13.
 --   section 15 the storage bucket and function verification report
 --   before commit  the post-condition that refuses to finish without it
 --
@@ -165,6 +166,7 @@ insert into public._canonical_columns (tbl, col, typ) values
   ('vendors',       'status',               'public.vendor_status'),
   ('vendors',       'store_status',         'text'),
   ('vendors',       'rating',               'numeric(3,2)'),
+  ('vendors',       'rating_count',         'integer'),
   ('vendors',       'delivery_available',   'boolean'),
   ('vendors',       'queue',                'integer'),
   ('vendors',       'cover_image',          'text'),
@@ -382,6 +384,17 @@ create table if not exists public.favorites (
   primary key (user_id, target_type, target_legacy_id)
 );
 
+create table if not exists public.shop_ratings (
+  order_number text primary key,
+  customer_id uuid not null references public.profiles(id) on delete cascade,
+  vendor_legacy_id bigint not null,
+  rating integer not null check (rating between 1 and 5),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists shop_ratings_vendor_idx
+  on public.shop_ratings (vendor_legacy_id);
+
 -- Section 5 can add a missing column to an existing table, but it cannot add a
 -- primary key, and this table's composite key *is* the app's natural key: the
 -- browser upserts on `user_id, target_type, target_legacy_id` and PostgREST
@@ -496,6 +509,9 @@ end $$;
 update public.profiles set status = 'active' where status is null;
 alter table public.profiles alter column status set default 'active';
 alter table public.profiles alter column status set not null;
+update public.vendors set rating_count = 0 where rating_count is null;
+alter table public.vendors alter column rating_count set default 0;
+alter table public.vendors alter column rating_count set not null;
 
 -- Keep order versions monotonic across KDS updates, even for clients that do
 -- not explicitly send updated_at. The app merges remote and local orders by
@@ -515,6 +531,66 @@ drop trigger if exists orders_set_updated_at on public.orders;
 create trigger orders_set_updated_at
 before update on public.orders
 for each row execute function public.set_order_updated_at();
+
+create or replace function public.rate_completed_order(p_order_number text, p_rating integer)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, auth, pg_temp
+as $$
+declare
+  v_vendor_legacy_id bigint;
+  v_rating numeric(3,2);
+  v_rating_count integer;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in as a customer to rate a shop.';
+  end if;
+  if not exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'customer'::public.app_role
+  ) then
+    raise exception 'Only customer accounts can rate shops.';
+  end if;
+  if p_rating is null or p_rating < 1 or p_rating > 5 then
+    raise exception 'A shop rating must be between 1 and 5 stars.';
+  end if;
+
+  select vendor_legacy_id into v_vendor_legacy_id
+  from public.orders
+  where order_number = p_order_number
+    and customer_id = auth.uid()
+    and status = 'COMPLETED'
+  for update;
+
+  if not found then
+    raise exception 'Only your completed orders can be rated.';
+  end if;
+
+  insert into public.shop_ratings (order_number, customer_id, vendor_legacy_id, rating)
+  values (p_order_number, auth.uid(), v_vendor_legacy_id, p_rating)
+  on conflict (order_number) do nothing;
+
+  if not found then
+    raise exception 'This order has already been rated.';
+  end if;
+
+  update public.vendors
+  set rating = ((rating * rating_count + p_rating)::numeric / (rating_count + 1)),
+      rating_count = rating_count + 1
+  where legacy_id = v_vendor_legacy_id
+  returning rating, rating_count into v_rating, v_rating_count;
+
+  if not found then
+    raise exception 'The shop for this order could not be found.';
+  end if;
+
+  return jsonb_build_object('rating', v_rating, 'rating_count', v_rating_count);
+end;
+$$;
+
+revoke all on function public.rate_completed_order(text, integer) from public, anon;
+grant execute on function public.rate_completed_order(text, integer) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- 6. Repair legacy_id values minted as fractions
@@ -1048,6 +1124,7 @@ alter table public.notifications enable row level security;
 alter table public.chats enable row level security;
 alter table public.post_comments enable row level security;
 alter table public.favorites enable row level security;
+alter table public.shop_ratings enable row level security;
 
 -- Every policy is dropped before being recreated. `create policy` has no
 -- "if not exists" form, so without the drop a second run would abort on
@@ -1357,6 +1434,10 @@ create policy favorites_own on public.favorites for all
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
 
+drop policy if exists shop_ratings_customer_read on public.shop_ratings;
+create policy shop_ratings_customer_read on public.shop_ratings for select to authenticated
+  using (customer_id = auth.uid());
+
 drop policy if exists comments_read on public.post_comments;
 create policy comments_read on public.post_comments for select using (
   exists (select 1 from public.posts p where p.id = post_id and (not p.hidden or public.is_admin()))
@@ -1437,6 +1518,9 @@ grant insert, update, delete on public.post_comments to authenticated;
 -- row already exists and is already correct.
 grant select, insert, delete on public.favorites to authenticated;
 
+revoke all on public.shop_ratings from anon, authenticated;
+grant select on public.shop_ratings to authenticated;
+
 -- -----------------------------------------------------------------------------
 -- 13. Storage bucket for post and menu images
 -- -----------------------------------------------------------------------------
@@ -1500,8 +1584,20 @@ begin
     ) then
       alter publication supabase_realtime add table public.chats;
     end if;
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'shop_ratings'
+    ) then
+      alter publication supabase_realtime add table public.shop_ratings;
+    end if;
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'vendors'
+    ) then
+      alter publication supabase_realtime add table public.vendors;
+    end if;
   else
-    raise warning 'supabase_realtime publication is missing; orders and chats will use periodic refresh until Realtime is enabled.';
+    raise warning 'supabase_realtime publication is missing; orders, chats and shop ratings will use periodic refresh until Realtime is enabled.';
   end if;
 end
 $$;
@@ -1771,6 +1867,10 @@ declare
   f_exists boolean;
   f_pk text;
   f_grants text;
+  ratings_exists boolean;
+  ratings_rls boolean;
+  ratings_rpc boolean;
+  ratings_order_key boolean;
   notification_key boolean;
   order_item_key boolean;
 begin
@@ -1850,8 +1950,59 @@ begin
       'duplicate rows and re-run supabase/schema.sql. Nothing has been committed.';
   end if;
 
+  select to_regclass('public.shop_ratings') is not null into ratings_exists;
+  if not ratings_exists then
+    raise exception
+      'schema.sql did not create public.shop_ratings. Completed-order ratings cannot be saved. '
+      'Nothing has been committed -- re-run the whole file and check for an earlier error.';
+  end if;
+
+  select relrowsecurity into ratings_rls
+  from pg_class where oid = 'public.shop_ratings'::regclass;
+  if not ratings_rls then
+    raise exception
+      'public.shop_ratings must have row level security enabled. Nothing has been committed.';
+  end if;
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'shop_ratings'
+      and policyname = 'shop_ratings_customer_read'
+  ) then
+    raise exception
+      'public.shop_ratings is missing its customer-only read policy. Nothing has been committed.';
+  end if;
+  select exists (
+    select 1 from pg_index i
+    where i.indrelid = 'public.shop_ratings'::regclass
+      and i.indisunique
+      and pg_get_indexdef(i.indexrelid) like '%(order_number)%'
+  ) into ratings_order_key;
+  if not ratings_order_key then
+    raise exception
+      'public.shop_ratings is missing its unique order_number key, so one-rating-per-order cannot be enforced. '
+      'Nothing has been committed.';
+  end if;
+  if has_table_privilege('authenticated', 'public.shop_ratings', 'INSERT')
+     or has_table_privilege('authenticated', 'public.shop_ratings', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.shop_ratings', 'DELETE') then
+    raise exception
+      'authenticated must not write shop_ratings directly; writes go through rate_completed_order. '
+      'Nothing has been committed.';
+  end if;
+  select has_function_privilege(
+    'authenticated', 'public.rate_completed_order(text,integer)', 'EXECUTE'
+  ) and not has_function_privilege(
+    'anon', 'public.rate_completed_order(text,integer)', 'EXECUTE'
+  ) into ratings_rpc;
+  if not ratings_rpc then
+    raise exception
+      'rate_completed_order must be executable by authenticated and unavailable to anon. '
+      'Nothing has been committed.';
+  end if;
+
   raise notice 'post-condition ok: public.favorites exists, keyed (%), grants: %',
     f_pk, f_grants;
+  raise notice 'post-condition ok: public.shop_ratings is private and writes require rate_completed_order';
 end $$;
 
 commit;

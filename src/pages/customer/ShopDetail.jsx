@@ -100,7 +100,12 @@ export default function CustomerShopDetail() {
                 <span aria-hidden="true" className="text-hairline-strong">&middot;</span>
                 <span className="flex items-center gap-1">
                   <Star className="w-3.5 h-3.5 text-rating fill-rating" aria-hidden="true" />
-                  <span className="font-medium text-body">{shop.rating.toFixed(1)}</span>
+                  <span className="font-medium text-body">{Number(shop.rating || 0).toFixed(1)}</span>
+                  <span className="text-xs text-muted">
+                    {Number(shop.ratingCount) > 0
+                      ? `(${shop.ratingCount} ${shop.ratingCount === 1 ? 'rating' : 'ratings'})`
+                      : '(no ratings yet)'}
+                  </span>
                 </span>
               </div>
             </div>

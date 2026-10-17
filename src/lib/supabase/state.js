@@ -1,6 +1,6 @@
 import { getSupabaseClient, isAuthCredentialError, isSupabaseConfigured } from '@/lib/supabase/client';
 import { upsertProfile } from '@/lib/supabase/profile';
-import { mapVendors, mapPosts, mapOrders, mapNotifications, mapCustomers, mapChats, mapFavorites, asNumber } from '@/lib/supabase/mappers';
+import { mapVendors, mapPosts, mapOrders, mapNotifications, mapCustomers, mapChats, mapShopRatings, mapFavorites, asNumber } from '@/lib/supabase/mappers';
 import { writeTolerant, upsertNotification } from '@/lib/supabase/tolerantWrite';
 
 /*
@@ -59,7 +59,7 @@ const reportWriteError = (operation, table, error) => {
 export async function loadRemoteState(userId, role) {
   const client = getSupabaseClient(role);
   if (!client) return null;
-  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult] = await Promise.all([
+  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult, shopRatingsResult] = await Promise.all([
     client.from('vendors').select('*, menu_items(*)').order('created_at', { ascending: false }),
     role === 'admin'
       ? client.from('posts').select('*').order('created_at', { ascending: false })
@@ -85,6 +85,9 @@ export async function loadRemoteState(userId, role) {
     // quietly returning another customer's list.
     userId && role === 'customer'
       ? client.from('favorites').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+      : Promise.resolve({ data: [] }),
+    userId && role === 'customer'
+      ? client.from('shop_ratings').select('order_number, vendor_legacy_id, rating, created_at').eq('customer_id', userId).order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
   ]);
   if (role === 'admin') {
@@ -116,6 +119,7 @@ export async function loadRemoteState(userId, role) {
     }),
     customers: mapCustomers(profilesResult.data),
     chats: mapChats(chatsResult.data),
+    shopRatings: shopRatingsResult.error ? null : mapShopRatings(shopRatingsResult.data),
     /*
       `favorites` is null rather than [] when the read failed, and the difference
       is load-bearing.
@@ -134,6 +138,20 @@ export async function loadRemoteState(userId, role) {
     favorites: favoritesResult.error ? null : mapFavorites(favoritesResult.data),
     role,
   };
+}
+
+export async function persistShopRating(orderNumber, rating) {
+  const client = getSupabaseClient('customer');
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('rate_completed_order', {
+    p_order_number: orderNumber,
+    p_rating: rating,
+  });
+  if (error) throw new Error(`Could not save your shop rating: ${error.message}`);
+  if (!data || !Number.isFinite(Number(data.rating)) || !Number.isFinite(Number(data.rating_count))) {
+    throw new Error('The rating was not confirmed by the database. Refresh and check the order before trying again.');
+  }
+  return data;
 }
 
 export async function loadRemoteOrders(userId, role) {

@@ -1,17 +1,13 @@
 import { getSupabaseClient, getAuthRedirectUrl } from '@/lib/supabase/client';
 import { validatePassword } from '@/lib/supabase/password';
-import { getProfile } from '@/lib/supabase/profile';
+import { fetchProfileRecord, getProfile, upsertProfile } from '@/lib/supabase/profile';
 
 export async function signIn(email, password, requestedRole) {
   const client = getSupabaseClient(requestedRole);
   if (!client) return { data: null, error: new Error('Supabase is not configured.') };
   const result = await client.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
   if (result.error) return result;
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('*')
-    .eq('id', result.data.user.id)
-    .maybeSingle();
+  const { data: profile, error: profileError } = await fetchProfileRecord(client, result.data.user.id);
   if (profileError) {
     await client.auth.signOut();
     return { data: null, error: new Error(`Account profile could not be loaded: ${profileError.message}`) };
@@ -38,15 +34,14 @@ export async function signIn(email, password, requestedRole) {
     await client.auth.signOut();
     return { data: null, error: new Error(`This account is registered as ${role}, not as ${requestedRole}.`) };
   }
+  let resolvedProfile = profile;
   if (!profile && role === 'customer') {
-    await client.from('profiles').upsert({
-      id: result.data.user.id,
+    resolvedProfile = await upsertProfile(result.data.user.id, {
       email: result.data.user.email,
-      role: 'customer',
       full_name: result.data.user.user_metadata?.fullName || null,
-    });
+    }, role);
   }
-  return { ...result, profile, vendor, role };
+  return { ...result, profile: resolvedProfile, vendor, role };
 }
 
 export async function sendPhoneOtp(phone, role) {
@@ -65,11 +60,7 @@ export async function verifyPhoneOtp(phone, token, requestedRole) {
   const normalizedPhone = phone.trim().replace(/\s+/g, '');
   const result = await client.auth.verifyOtp({ phone: normalizedPhone, token: token.trim(), type: 'sms' });
   if (result.error || !result.data?.user) return result;
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('*')
-    .eq('id', result.data.user.id)
-    .maybeSingle();
+  const { data: profile, error: profileError } = await fetchProfileRecord(client, result.data.user.id);
   if (profileError) return { data: null, error: profileError };
   const { data: vendor, error: vendorError } = await client
     .from('vendors')
@@ -110,11 +101,7 @@ export async function verifyEmailOtp(email, token, requestedRole) {
   const normalizedEmail = email.trim().toLowerCase();
   const result = await client.auth.verifyOtp({ email: normalizedEmail, token: token.trim(), type: 'email' });
   if (result.error || !result.data?.user) return result;
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .select('*')
-    .eq('id', result.data.user.id)
-    .maybeSingle();
+  const { data: profile, error: profileError } = await fetchProfileRecord(client, result.data.user.id);
   if (profileError) return { data: null, error: profileError };
   const { data: vendor, error: vendorError } = await client.from('vendors').select('*').eq('owner_id', result.data.user.id).maybeSingle();
   if (vendorError) {

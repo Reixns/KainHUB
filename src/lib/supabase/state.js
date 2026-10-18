@@ -71,7 +71,9 @@ export async function loadRemoteState(userId, role) {
       : Promise.resolve({ data: [] }),
     userId ? client.from('notifications').select('*').eq('user_id', userId).order('created_at', { ascending: false }) : Promise.resolve({ data: [] }),
     role === 'admin' || role === 'vendor'
-      ? client.from('profiles').select('*').order('created_at', { ascending: false })
+      ? client.from('profiles')
+        .select('*, customer_profiles(*), vendor_profiles(*), admin_profiles(*)')
+        .order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
     userId
       ? (role === 'customer'
@@ -117,7 +119,10 @@ export async function loadRemoteState(userId, role) {
         ? notification
         : { ...notification, userId: asNumber(vendorRecipientId) };
     }),
-    customers: mapCustomers(profilesResult.data),
+    customers: mapCustomers((profilesResult.data || []).map((profile) => ({
+      ...profile,
+      ...(profile.customer_profiles || {}),
+    }))),
     chats: mapChats(chatsResult.data),
     shopRatings: shopRatingsResult.error ? null : mapShopRatings(shopRatingsResult.data),
     /*
@@ -661,7 +666,7 @@ const persistPosts = async (client, state, authUser, vendorForPosts) => {
           ? { kind: 'menu', products: post.products }
           : post.product || null,
         image_url: post.image || null,
-        likes: post.likes || 0, liked_by: post.likedBy || [], comments: post.comments || [],
+        liked_by: post.likedBy || [], comments: post.comments || [],
         pinned: !!post.pinned, hidden: !!post.hidden, reported: !!post.reported, report_reason: post.reportReason || null,
         publish_at: post.publishAt || null, expires_at: post.expiresAt || null,
       },

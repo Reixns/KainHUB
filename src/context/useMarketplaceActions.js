@@ -33,11 +33,8 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
     setPosts((list) => list.map((p) => {
       if (p.id !== postId) return p;
       const liked = p.likedBy.includes(userId);
-      return {
-        ...p,
-        likes: liked ? p.likes - 1 : p.likes + 1,
-        likedBy: liked ? p.likedBy.filter((x) => x !== userId) : [...p.likedBy, userId],
-      };
+      const likedBy = liked ? p.likedBy.filter((x) => x !== userId) : [...p.likedBy, userId];
+      return { ...p, likes: likedBy.length, likedBy };
     }));
   }, [setPosts, auth]);
 

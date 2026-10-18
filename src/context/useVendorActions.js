@@ -70,7 +70,7 @@ export function useVendorActions({ setVendors, setCustomers, setPosts, setAuth, 
     };
     const existingPost = posts.find((post) => post.authorId === vendor.id && (post.productId === item.id || post.product?.id === item.id));
     if (existingPost) {
-      setPosts((current) => current.map((post) => post.id === existingPost.id ? { ...post, ...productPost, id: post.id, likes: post.likes || 0, likedBy: post.likedBy || [], comments: post.comments || [] } : post));
+      setPosts((current) => current.map((post) => post.id === existingPost.id ? { ...post, ...productPost, id: post.id, likes: (post.likedBy || []).length, likedBy: post.likedBy || [], comments: post.comments || [] } : post));
     } else {
       setPosts((current) => [{ id: nextLocalId(), ...productPost }, ...current]);
     }
@@ -119,7 +119,7 @@ export function useVendorActions({ setVendors, setCustomers, setPosts, setAuth, 
     };
     const existingPost = posts.find((post) => post.authorId === vendor.id && post.menuVendorId === vendor.id);
     if (existingPost) {
-      setPosts((current) => current.map((post) => post.id === existingPost.id ? { ...post, ...menuPost, id: post.id, likes: post.likes || 0, likedBy: post.likedBy || [], comments: post.comments || [] } : post));
+      setPosts((current) => current.map((post) => post.id === existingPost.id ? { ...post, ...menuPost, id: post.id, likes: (post.likedBy || []).length, likedBy: post.likedBy || [], comments: post.comments || [] } : post));
     } else {
       setPosts((current) => [{ id: nextLocalId(), ...menuPost }, ...current]);
     }

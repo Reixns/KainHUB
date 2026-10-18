@@ -38,6 +38,26 @@ Never put a Supabase `service_role` or secret key in a `VITE_*` variable. Vite
 embeds `VITE_*` values in the browser bundle. Local `.env*` files are ignored by
 Git; `.env.example` contains placeholders only.
 
+## Supabase account data
+
+The database follows the customer, vendor, and admin portal workflows.
+`profiles` stores the shared Auth identity and role/status; `customer_profiles`,
+`vendor_profiles`, and `admin_profiles` store role-specific personal details.
+`vendors` remains the separate shop/business record. Table descriptions in
+[`supabase/schema.sql`](./supabase/schema.sql) label each table with the portal
+that uses it and its role in the workflow.
+
+See [`DATABASE_DESIGN.md`](./DATABASE_DESIGN.md) for portal-by-portal data
+flows, access notes, entity relationships, and the field/type dictionary.
+Existing marketplace table names are retained for compatibility with the app.
+
+For the staged role-profile rollout, run
+[`supabase/migrations/20261018_separate_role_profiles.sql`](./supabase/migrations/20261018_separate_role_profiles.sql)
+in the Supabase SQL Editor before deploying the updated frontend. It is
+additive, backfills existing accounts, and keeps the old `profiles` detail
+columns synchronized so the currently deployed app continues working. Do not
+remove those compatibility columns until all older clients have been retired.
+
 ## Publish changes
 
 The public repository is [`Reixns/KainHUB`](https://github.com/Reixns/KainHUB)

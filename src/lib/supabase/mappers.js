@@ -56,6 +56,7 @@ export const mapPosts = (rows) => (rows || []).map((p) => {
     product: menuProducts ? null : p.product,
     products: menuProducts || undefined,
     likedBy: p.liked_by || [],
+    likes: (p.liked_by || []).length,
     comments: p.comments || [],
     publishAt: p.publish_at,
     expiresAt: p.expires_at,
@@ -98,13 +99,15 @@ export const mapNotifications = (rows) => (rows || []).map((n) => ({
 }));
 
 export const mapCustomers = (rows) => (rows || [])
-  .filter((p) => p.role === 'customer')
-  .map((p) => ({
-    ...p,
-    id: p.id,
-    fullName: p.full_name,
-    status: p.status || 'active',
-    createdAt: p.created_at,
+  .filter((profile) => profile.role === 'customer')
+  .map((profile) => ({
+    ...profile,
+    id: profile.id,
+    role: profile.role,
+    email: profile.email,
+    status: profile.status || 'active',
+    fullName: profile.full_name,
+    createdAt: profile.created_at,
   }));
 
 export const mapChats = (rows) => (rows || []).map((chat) => ({

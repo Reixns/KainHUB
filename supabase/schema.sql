@@ -717,12 +717,23 @@ declare
   disagreeing bigint;
 begin
   if to_regclass('public.posts') is not null then
-    select count(*) into disagreeing
-    from public.posts
-    where likes is distinct from coalesce(jsonb_array_length(liked_by), 0);
-    raise notice 'posts.likes: row(s) whose counter disagreed with liked_by: %', disagreeing;
-    alter table public.posts drop column if exists likes;
-    raise notice 'dropped public.posts.likes (use jsonb_array_length(liked_by))';
+    if exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'posts'
+        and column_name = 'likes'
+    ) then
+      execute
+        'select count(*) from public.posts
+          where likes is distinct from coalesce(jsonb_array_length(liked_by), 0)'
+        into disagreeing;
+      raise notice 'posts.likes: row(s) whose counter disagreed with liked_by: %', disagreeing;
+      alter table public.posts drop column likes;
+      raise notice 'dropped public.posts.likes (use jsonb_array_length(liked_by))';
+    else
+      raise notice 'skipped public.posts.likes: column does not exist';
+    end if;
   end if;
 
   if to_regclass('public.vendors') is not null then

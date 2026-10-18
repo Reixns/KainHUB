@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Send, Store, Utensils, MessageSquare, FileText, MapPin, Phone, CreditCard, Package, ImagePlus, X, Search, Reply, SmilePlus, Info, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, Send, Store, Utensils, MessageSquare, FileText, MapPin, Phone, CreditCard, Package, ImagePlus, X, Search, Reply, SmilePlus, Info, ChevronDown, SlidersHorizontal, Check, CheckCheck } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
+import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
 import { Avatar, Button, Card, EmptyState, getProductImage, formatPeso, formatDateTime, formatQueue, StatusBadge, timeAgo, isImageSource, isEmojiSource, Modal } from '@/components/UI';
 import ShopRatingForm from '@/components/ShopRatingForm';
 import { ORDER_STATUSES_DELIVERY, ORDER_STATUSES_PICKUP } from '@/data/mockData';
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 const THREAD_FILTERS = [
   { id: 'all', label: 'All' },
@@ -46,6 +47,7 @@ export default function Chat() {
     sendChatMessage,
     sendChatMenu,
     toggleChatReaction,
+    markChatMessageRead,
     uploadMediaFile,
     rateShop,
   } = useApp();
@@ -69,6 +71,7 @@ export default function Chat() {
   const [pendingImage, setPendingImage] = useState(null);
   const [imageError, setImageError] = useState('');
   const [sendingImage, setSendingImage] = useState(false);
+  const [counterpartTyping, setCounterpartTyping] = useState(false);
   const [viewingImage, setViewingImage] = useState('');
   const messagesRef = useRef(null);
   const detailsScrollRef = useRef(null);
@@ -76,6 +79,9 @@ export default function Chat() {
   const previewUrlRef = useRef('');
   const messageElementsRef = useRef(new Map());
   const highlightTimeoutRef = useRef(null);
+  const typingChannelRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const remoteTypingTimeoutRef = useRef(null);
 
   // The preview uses a blob: URL. Revoking it on unmount stops the blob from
   // outliving the composer; every other path clears it explicitly.
@@ -203,12 +209,116 @@ export default function Chat() {
   }, [auth.role, conversationQuery, customers, liveOrdersById, myChats, vendors]);
 
   const latestMessageId = activeChat?.messages.at(-1)?.id;
+  const latestOwnMessageId = [...(activeChat?.messages || [])]
+    .reverse()
+    .find((message) => message.senderRole === auth.role)?.id;
 
   useLayoutEffect(() => {
     const container = messagesRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
   }, [activeChatId, latestMessageId, mobileShowConversations]);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia('(min-width: 1024px)');
+    const markVisibleMessages = () => {
+      const threadVisible = desktopQuery.matches
+        || (!mobileShowConversations && !mobileShowDetails);
+      if (!activeChat || !threadVisible || document.visibilityState !== 'visible') return;
+      activeChat.messages.forEach((message) => {
+        if (message.senderRole !== auth.role && !message.readAt) {
+          markChatMessageRead({
+            chatId: activeChat.id,
+            vendorId: activeChat.vendorId,
+            customerId: activeChat.customerId,
+            messageId: message.id,
+          });
+        }
+      });
+    };
+    markVisibleMessages();
+    document.addEventListener('visibilitychange', markVisibleMessages);
+    desktopQuery.addEventListener('change', markVisibleMessages);
+    return () => {
+      document.removeEventListener('visibilitychange', markVisibleMessages);
+      desktopQuery.removeEventListener('change', markVisibleMessages);
+    };
+  }, [activeChat, auth.role, markChatMessageRead, mobileShowConversations, mobileShowDetails]);
+
+  useEffect(() => {
+    if (!activeChatId) return undefined;
+    setCounterpartTyping(false);
+    const topic = `chat-presence-${activeChatId}`;
+    const currentUserId = String(auth.user.id);
+    let channel;
+    let localChannel;
+
+    const receiveTyping = (presence) => {
+      if (String(presence.userId) === currentUserId || presence.role === auth.role) return;
+      setCounterpartTyping(Boolean(presence.typing));
+      if (remoteTypingTimeoutRef.current) clearTimeout(remoteTypingTimeoutRef.current);
+      if (presence.typing) {
+        remoteTypingTimeoutRef.current = setTimeout(() => setCounterpartTyping(false), 4000);
+      }
+    };
+
+    if (isSupabaseConfigured) {
+      const client = getSupabaseClient(auth.role);
+      if (!client) return undefined;
+      channel = client.channel(topic, { config: { presence: { key: `${auth.role}:${currentUserId}` } } });
+      channel.on('presence', { event: 'sync' }, () => {
+        const peers = Object.values(channel.presenceState()).flat();
+        const typingPeer = peers.find((peer) => (
+          String(peer.userId) !== currentUserId && peer.role !== auth.role && peer.typing
+        ));
+        setCounterpartTyping(Boolean(typingPeer));
+      });
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED' && draftRef.current?.value.trim()) {
+          void channel.track({ userId: currentUserId, role: auth.role, typing: true });
+        }
+      });
+      typingChannelRef.current = {
+        track: () => channel.track({ userId: currentUserId, role: auth.role, typing: true }),
+        untrack: () => channel.untrack(),
+      };
+    } else if (typeof BroadcastChannel !== 'undefined') {
+      localChannel = new BroadcastChannel('kainhub-chat-typing');
+      localChannel.onmessage = (event) => {
+        if (event.data?.chatId === activeChatId) receiveTyping(event.data);
+      };
+      typingChannelRef.current = {
+        track: () => localChannel.postMessage({
+          chatId: activeChatId,
+          userId: currentUserId,
+          role: auth.role,
+          typing: true,
+        }),
+        untrack: () => localChannel.postMessage({
+          chatId: activeChatId,
+          userId: currentUserId,
+          role: auth.role,
+          typing: false,
+        }),
+      };
+    }
+
+    return () => {
+      typingChannelRef.current = null;
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (remoteTypingTimeoutRef.current) clearTimeout(remoteTypingTimeoutRef.current);
+      if (localChannel) localChannel.close();
+      if (channel) void channel.unsubscribe();
+    };
+  }, [activeChatId, auth.role, auth.user.id]);
+
+  const publishTyping = (typing) => {
+    const action = typing ? typingChannelRef.current?.track : typingChannelRef.current?.untrack;
+    if (!action) return;
+    Promise.resolve(action()).catch((error) => {
+      console.warn('[chat] typing status could not be updated:', error);
+    });
+  };
 
   const counterpart = useMemo(() => {
     if (!activeChat) return null;
@@ -259,7 +369,7 @@ export default function Chat() {
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      setImageError('Images must be 5 MB or smaller.');
+      setImageError('Images must be 4 MB or smaller.');
       return;
     }
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
@@ -291,6 +401,7 @@ export default function Chat() {
     if (!pendingImage) {
       if (!draft.trim()) return;
       sendChatMessage({ ...target, text: draft, replyTo });
+      publishTyping(false);
       setDraft('');
       setReplyTo(null);
       if (draftRef.current) draftRef.current.style.height = '40px';
@@ -308,6 +419,7 @@ export default function Chat() {
         return;
       }
       sendChatMessage({ ...target, text: caption, image: result.url, replyTo });
+      publishTyping(false);
       setDraft('');
       setReplyTo(null);
       if (draftRef.current) draftRef.current.style.height = '40px';
@@ -322,6 +434,12 @@ export default function Chat() {
 
   const handleDraftChange = (event) => {
     setDraft(event.target.value);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    const isTyping = Boolean(event.target.value.trim());
+    publishTyping(isTyping);
+    if (isTyping) {
+      typingTimeoutRef.current = setTimeout(() => publishTyping(false), 1600);
+    }
     event.target.style.height = '40px';
     event.target.style.height = `${Math.min(event.target.scrollHeight, 128)}px`;
   };
@@ -431,6 +549,9 @@ export default function Chat() {
                 ? vendors.find((vendor) => vendor.id === chat.vendorId)
                 : customers.find((customer) => customer.id === chat.customerId);
               const lastMessage = chat.messages[chat.messages.length - 1];
+              const unreadCount = chat.messages.filter((message) => (
+                message.senderRole !== auth.role && !message.readAt
+              )).length;
               const isActive = activeChatId === chat.id;
               const rawAvatar = auth.role === 'customer' ? person?.logo : person?.avatar;
               const emoji = isEmojiSource(rawAvatar) ? rawAvatar : undefined;
@@ -456,13 +577,14 @@ export default function Chat() {
                   <Avatar name={person?.name || person?.fullName || 'User'} emoji={emoji} src={src} size="md" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <div className={`truncate text-sm ${isActive ? 'font-semibold text-ink' : 'font-medium text-ink'}`}>
+                      <div className={`truncate text-sm ${unreadCount ? 'font-bold text-ink' : isActive ? 'font-semibold text-ink' : 'font-medium text-ink'}`}>
                         {person?.name || person?.fullName || 'User'}
                       </div>
                       {lastMessage?.createdAt && <span className="shrink-0 text-[10px] text-subtle">{timeAgo(lastMessage.createdAt)}</span>}
                     </div>
-                    <div className={`mt-0.5 truncate text-xs ${isDarkChat ? 'text-white/55' : 'text-muted'}`}>
-                      {lastMessage?.type === 'menu'
+                    <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                      <div className={`min-w-0 flex-1 truncate text-xs ${unreadCount ? isDarkChat ? 'font-semibold text-white/90' : 'font-semibold text-ink' : isDarkChat ? 'text-white/55' : 'text-muted'}`}>
+                        {lastMessage?.type === 'menu'
                         ? 'Menu sent'
                         : lastMessage?.type === 'image'
                           ? lastMessage.text || 'Photo sent'
@@ -476,9 +598,19 @@ export default function Chat() {
                             */
                             ? receiptPreviewText(lastMessage, liveOrdersById)
                             : lastMessage?.text || 'Start a conversation'}
+                      </div>
+                      {unreadCount > 0 && (
+                        <span
+                          className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white ${
+                            isDarkChat ? 'bg-violet-500' : 'bg-brand'
+                          }`}
+                          aria-label={`${unreadCount} unread ${unreadCount === 1 ? 'message' : 'messages'}`}
+                        >
+                          {unreadCount > 99 ? '99+' : unreadCount}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  {isActive && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand" aria-hidden="true" />}
                 </button>
               );
             })}
@@ -788,8 +920,16 @@ export default function Chat() {
                           )}
                         </div>
                       ) : <p className="text-sm whitespace-pre-wrap">{message.text}</p>}
-                      <div className={`text-xs mt-1 ${photo ? 'px-2 pb-1' : ''} ${isReceipt ? 'px-1 text-subtle' : isMine ? 'text-white/70' : 'text-subtle'}`}>{timeAgo(message.createdAt)}</div>
                     </div>
+                    {isMine && String(message.id) === String(latestOwnMessageId) && (
+                      <div className="mt-0.5 flex w-full justify-end px-1 text-[10px] leading-4 text-white/55">
+                        <span className="inline-flex items-center gap-1" aria-label={message.readAt ? 'Seen' : 'Sent'}>
+                          {message.readAt
+                            ? <><CheckCheck className="h-3 w-3 text-cyan-200" aria-hidden="true" /><span>Seen</span></>
+                            : <><Check className="h-3 w-3" aria-hidden="true" /><span>Sent</span></>}
+                        </span>
+                      </div>
+                    )}
                     {(message.reactions || []).length > 0 && (
                       <div className={`mt-1 flex flex-wrap gap-1.5 ${isMine ? 'justify-end' : 'justify-start'}`} aria-label="Message reactions">
                         {message.reactions.map((reaction) => {
@@ -843,6 +983,22 @@ export default function Chat() {
                                 {emoji}
                               </button>
                             ))}
+                            {counterpartTyping && (
+                              <div className="flex items-start" aria-label={`${counterpart?.name || counterpart?.fullName || 'The other person'} is typing`} aria-live="polite">
+                                <div className={`inline-flex min-h-9 items-center gap-1.5 rounded-2xl rounded-bl-md border px-3.5 py-2 ${
+                                  isDarkChat ? 'border-white/10 bg-white/[0.07] text-white/60' : 'border-hairline bg-white text-muted'
+                                }`}>
+                                  {[0, 1, 2].map((dot) => (
+                                    <span
+                                      key={dot}
+                                      className="h-1.5 w-1.5 animate-bounce rounded-full bg-current"
+                                      style={{ animationDelay: `${dot * 120}ms` }}
+                                    />
+                                  ))}
+                                  <span className="ml-1 text-[11px]">typing...</span>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -946,6 +1102,10 @@ export default function Chat() {
                     ref={draftRef}
                     value={draft}
                     onChange={handleDraftChange}
+                    onBlur={() => {
+                      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                      publishTyping(false);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' && !event.shiftKey) {
                         event.preventDefault();
@@ -959,11 +1119,13 @@ export default function Chat() {
                   <Button
                     type="submit"
                     aria-label="Send message"
-                    disabled={!draft.trim() && !pendingImage}
+                    title="Send message"
+                    disabled={(!draft.trim() && !pendingImage) || sendingImage}
                     loading={sendingImage}
-                    className="h-9 w-9 shrink-0 rounded-lg p-0"
+                    className="h-10 w-10 shrink-0 rounded-xl border border-violet-300/20 bg-violet-600 p-0 text-white shadow-md shadow-violet-950/30 transition duration-150 hover:-translate-y-0.5 hover:bg-violet-500 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#19191f] active:translate-y-0 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none"
                   >
-                    <Send className="w-4 h-4" />
+                    <Send className="h-4 w-4" aria-hidden="true" />
+                    <span className="sr-only">Send</span>
                   </Button>
                 </div>
               </form>

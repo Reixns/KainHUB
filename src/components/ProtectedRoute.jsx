@@ -1,12 +1,13 @@
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import SessionSkeleton from '@/components/SessionSkeleton';
 
 export default function ProtectedRoute({ children, role }) {
   const { auth, authError, authReady } = useApp();
   const location = useLocation();
 
   if (!authReady) {
-    return <div className="min-h-screen flex items-center justify-center text-sm text-muted">Loading session...</div>;
+    return <SessionSkeleton role={role} />;
   }
 
   if (authError) {

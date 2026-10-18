@@ -9,7 +9,7 @@ import { useState } from 'react';
 
 
 export default function VendorLayout() {
-  const { auth, logout, orders, vendors, notifications, platformSettings } = useApp();
+  const { auth, logout, orders, vendors, chats, notifications, platformSettings } = useApp();
   const navigate = useNavigate();
   // Docked by default on desktop so the navigation is visible with the
   // interface beside it; closed by default on mobile where it is an overlay.
@@ -21,7 +21,19 @@ export default function VendorLayout() {
     (String(o.vendorId) === String(auth.user?.id) || String(o.vendorId) === String(auth.user?.ownerId))
     && ['RECEIVED', 'PREPARING', 'READY', 'OUT FOR DELIVERY'].includes(o.status)
   )).length;
-  const unreadNotifications = notifications.filter((notification) => String(notification.userId) === String(auth.user?.id) && !notification.read).length;
+  const unreadNotifications = notifications.filter((notification) => (
+    String(notification.userId) === String(auth.user?.id)
+    && !notification.read
+    && notification.type !== 'chat'
+  )).length;
+  const unreadChatCount = chats
+    .filter((chat) => (
+      String(chat.vendorId) === String(auth.user?.id)
+      || String(chat.vendorId) === String(auth.user?.ownerId)
+    ))
+    .reduce((count, chat) => count + chat.messages.filter((message) => (
+      message.senderRole !== auth.role && !message.readAt
+    )).length, 0);
 
   const handleLogout = () => {
     logout();
@@ -97,7 +109,7 @@ export default function VendorLayout() {
     { to: '/vendor/menu', icon: Utensils, label: 'Menu' },
     { to: '/vendor/inventory', icon: Package, label: 'Inventory' },
     { to: '/vendor/marketplace', icon: MessageSquare, label: 'Marketplace' },
-    { to: '/vendor/messages', icon: MessageSquare, label: 'Messages' },
+    { to: '/vendor/messages', icon: MessageSquare, label: 'Messages', badge: unreadChatCount },
     { to: '/vendor/notifications', icon: Bell, label: 'Notifications', badge: unreadNotifications },
     { to: '/vendor/analytics', icon: BarChart3, label: 'Analytics' },
     { to: '/vendor/settings', icon: Settings, label: 'Settings' },

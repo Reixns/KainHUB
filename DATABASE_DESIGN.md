@@ -8,7 +8,7 @@
 | Application schema | `public` |
 | Authentication | Supabase Auth (`auth.users`) |
 | Schema source | [`supabase/schema.sql`](./supabase/schema.sql) |
-| Active application tables | 13 |
+| Active application tables | 14 |
 
 KainHUB has three portals with separate personal profile tables and shared
 marketplace records. `profiles` remains the Auth account/role registry; each
@@ -398,6 +398,22 @@ policy.
 | `messages` | `jsonb` | Ordered messages, including supported reactions. |
 | `updated_at` | `timestamp with time zone` | Last conversation update time. |
 
+### 4.12 `activity_logs` — Portal Audit Trail
+
+**Used by:** Admin audit screen. Database triggers record safe workflow events
+for customer, vendor, and admin changes; reads are restricted to admins.
+
+| Field | Data type | Description |
+| --- | --- | --- |
+| `id` | `bigint` (PK, identity) | Event identifier. |
+| `actor_id` | `uuid` | Authenticated user who performed the change, when available. |
+| `actor_role` | `app_role` | Portal role associated with the actor. |
+| `action` | `text` | Event action, such as insert, update, or delete. |
+| `entity_type` | `text` | Table or workflow entity affected. |
+| `entity_id` | `text` | Identifier of the affected record, when available. |
+| `details` | `jsonb` | Safe changed-field and workflow metadata; excludes chat contents, profile details, and order contact data. |
+| `created_at` | `timestamp with time zone` | Event time; indexed newest-first for the audit screen. |
+
 ## 5. Organization and Safety Notes
 
 - Table descriptions in Supabase start with portal/domain labels, making the
@@ -406,8 +422,8 @@ policy.
   order; the vendor processes that same order; admin reviews that same order.
 - RLS controls which rows each portal can access. A table appearing in a portal
   map does not grant access by itself.
-- Analytics and audit screens are derived from existing records, not duplicate
-  tables.
+- Analytics are derived from existing records; `activity_logs` stores the
+  persistent, trigger-generated audit trail for portal changes.
 - `_canonical_columns` is a locked schema-verification helper created and
   dropped by the migration; it is not an application table.
 - `customer_profiles`, `vendor_profiles`, and `admin_profiles` are the active
@@ -420,5 +436,6 @@ policy.
 
 Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
 to apply the full schema, including creation and backfill of role-specific
-profiles, RLS policies, and the compatibility trigger. Deploy the matching
-frontend to switch application reads and writes to the role profile tables.
+profiles, the activity audit trail, RLS policies, and compatibility triggers.
+Deploy the matching frontend to switch application reads and writes to the
+role profile tables.

@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 
 
 export default function CustomerLayout() {
-  const { auth, cart, logout, notifications, platformSettings, favoriteCount } = useApp();
+  const { auth, cart, logout, notifications, chats, platformSettings, favoriteCount } = useApp();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -19,7 +19,14 @@ export default function CustomerLayout() {
   const menuButtonRef = useRef(null);
 
   const cartCount = cart.reduce((s, i) => s + i.quantity, 0);
-  const unreadNotifs = notifications.filter((n) => String(n.userId) === String(auth.user?.id) && !n.read).length;
+  const unreadNotifs = notifications.filter((n) => (
+    String(n.userId) === String(auth.user?.id) && !n.read && n.type !== 'chat'
+  )).length;
+  const unreadChatCount = chats
+    .filter((chat) => String(chat.customerId) === String(auth.user?.id))
+    .reduce((count, chat) => count + chat.messages.filter((message) => (
+      message.senderRole !== auth.role && !message.readAt
+    )).length, 0);
   const showMobileSearch = pathname === '/customer' || pathname === '/customer/community';
   const isMessagesPage = pathname === '/customer/messages';
 
@@ -111,11 +118,16 @@ export default function CustomerLayout() {
           <div className="ml-auto flex shrink-0 items-center gap-1 border-l border-white/10 pl-2 lg:ml-0 lg:gap-1.5 lg:pl-3">
             <Link
               to="/customer/messages"
-              aria-label="Chat"
+              aria-label={unreadChatCount > 0 ? `Chat, ${unreadChatCount} unread messages` : 'Chat'}
               title="Chat"
               className="relative hidden h-11 w-11 items-center justify-center rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white lg:inline-flex"
             >
               <MessageSquare className="w-5 h-5" aria-hidden="true" />
+              {unreadChatCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white ring-2 ring-[#101014]">
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              )}
             </Link>
             <Link to="/customer/notifications" aria-label={unreadNotifs > 0 ? `Notifications, ${unreadNotifs} unread` : 'Notifications'} className="tap-target relative rounded-xl text-white/65 transition-colors hover:bg-white/[0.07] hover:text-white">
               <Bell className="w-5 h-5" />
@@ -185,6 +197,11 @@ export default function CustomerLayout() {
             </Link>
             <Link to="/customer/messages" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 min-h-11 px-4 py-2 text-sm text-body hover:bg-surface-sunken">
               <MessageSquare className="w-4 h-4 text-subtle" /> Messages
+              {unreadChatCount > 0 && (
+                <span className="ml-auto rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              )}
             </Link>
             <Link to="/customer/community" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 min-h-11 px-4 py-2 text-sm text-body hover:bg-surface-sunken">
               <Users className="w-4 h-4 text-subtle" /> Community
@@ -240,7 +257,7 @@ export default function CustomerLayout() {
           <BottomNav to="/customer/shops" icon={Store} label="Shops" />
           <BottomNav to="/customer/foods" icon={Utensils} label="Foods" />
           <BottomNav to="/customer/orders" icon={ClipboardList} label="Orders" />
-          <BottomNav to="/customer/messages" icon={MessageSquare} label="Chat" />
+          <BottomNav to="/customer/messages" icon={MessageSquare} label="Chat" count={unreadChatCount} />
           <BottomNav to="/customer/profile" icon={User} label="Profile" />
         </div>
         <div className="h-[env(safe-area-inset-bottom)]" />

@@ -59,7 +59,7 @@ const reportWriteError = (operation, table, error) => {
 export async function loadRemoteState(userId, role) {
   const client = getSupabaseClient(role);
   if (!client) return null;
-  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult, shopRatingsResult] = await Promise.all([
+  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult, shopRatingsResult, activityLogsResult] = await Promise.all([
     client.from('vendors').select('*, menu_items(*)').order('created_at', { ascending: false }),
     role === 'admin'
       ? client.from('posts').select('*').order('created_at', { ascending: false })
@@ -91,6 +91,9 @@ export async function loadRemoteState(userId, role) {
     userId && role === 'customer'
       ? client.from('shop_ratings').select('order_number, vendor_legacy_id, rating, created_at').eq('customer_id', userId).order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
+    role === 'admin'
+      ? client.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(100)
+      : Promise.resolve({ data: [] }),
   ]);
   if (role === 'admin') {
     const failedQuery = [
@@ -100,6 +103,7 @@ export async function loadRemoteState(userId, role) {
       ['notifications', notificationsResult],
       ['profiles', profilesResult],
       ['chats', chatsResult],
+      ['activity_logs', activityLogsResult],
     ].find(([, result]) => result.error);
     if (failedQuery) {
       const [table, result] = failedQuery;
@@ -141,6 +145,7 @@ export async function loadRemoteState(userId, role) {
       ambiguous, which is why this is not quietly normalised to [] here.
     */
     favorites: favoritesResult.error ? null : mapFavorites(favoritesResult.data),
+    activityLogs: activityLogsResult.data || [],
     role,
   };
 }
@@ -198,6 +203,18 @@ export async function persistChatMessage({ chatId, vendorId, customerId, message
     p_message: message,
   });
   if (error) throw new Error(`Could not send message: ${error.message}`);
+}
+
+export async function persistChatMessageRead({ chatId, vendorId, customerId, messageId }, role) {
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { error } = await client.rpc('mark_chat_message_read', {
+    p_chat_id: chatId,
+    p_vendor_legacy_id: vendorId,
+    p_customer_id: customerId,
+    p_message_id: String(messageId),
+  });
+  if (error) throw new Error(`Could not save chat read receipt: ${error.message}`);
 }
 
 const persistProfile = async (client, state, authUser) => {
@@ -420,6 +437,7 @@ const persistVendor = async (client, state, authUser, profile) => {
       vendor_id: vendorRow.id,
       name: item.name,
       description: item.description || '',
+      category: item.category?.trim() || null,
       price: item.price,
       stock: item.stock || 0,
       available: item.available !== false,

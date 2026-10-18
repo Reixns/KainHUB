@@ -28,15 +28,14 @@ import {
   resetSupabaseData,
   uploadMedia as uploadSupabaseMedia,
   deleteSupabaseNotification,
-  loadRemoteOrders,
-  loadRemoteChats,
   persistChatMessage,
+  persistChatMessageRead,
   persistShopRating,
   persistOrderStatus,
 } from '@/lib/supabase';
 
 import { STORAGE_KEY, LOCAL_AUTH_KEY, ACTIVE_PORTAL_KEY, PORTAL_CHANGE_EVENT, FEED_CHANNEL, loadState, saveState, normalizeChats, mergeChats, mergePosts, mergeOrders, mergeFavorites, mergeById, updateIfChanged, nextLocalId, updateIdentityRow, normalizeFavorites, favoriteKey, ORDER_NOTIFICATION_TTL_MS, isNotificationExpired, pruneExpiredNotifications } from '@/context/persistence';
-import { asNumber, mapShopRatings } from '@/lib/supabase/mappers';
+import { asNumber } from '@/lib/supabase/mappers';
 import { clearVendorLogoPin, hydrateLocalVendorOverlay, pinVendorLogo } from '@/lib/supabase/state';
 /*
   From lib/notifications, NOT from components/UI. UI.jsx imports useApp to render
@@ -99,6 +98,7 @@ export function AppProvider({ children }) {
     ...INITIAL_ADMINS.filter((seed) =>     !savedAdmins.some((admin) => admin.email?.toLowerCase() === seed.email.toLowerCase())),
   ]);
   const [orders, setOrders] = useState(initialState?.orders || INITIAL_ORDERS);
+  const [auditLogs, setAuditLogs] = useState([]);
   const savedPosts = initialState?.posts || INITIAL_POSTS;
   const [posts, setPosts] = useState(savedPosts.filter((post) => !(post.type === 'new_product' && post.product && !post.publishAt)));
   const [notifications, setNotifications] = useState(initialState?.notifications || INITIAL_NOTIFICATIONS);
@@ -262,9 +262,7 @@ export function AppProvider({ children }) {
       : window.location.pathname.startsWith('/vendor')
         ? 'vendor'
         : 'customer';
-    let activeRole = isResetPath
-      ? pathRole
-      : sessionStorage.getItem(ACTIVE_PORTAL_KEY) || pathRole;
+    let activeRole = pathRole;
     let active = true;
     let unsubscribe = () => {};
     let currentClient = null;
@@ -367,6 +365,8 @@ export function AppProvider({ children }) {
       }
       if (!active || watchId !== authWatchIdRef.current || !remote) return;
       remoteStateReadyRef.current = true;
+      setOrdersRealtimeStatus('connected');
+      setChatRealtimeStatus('connected');
       if (role === 'customer' && remote.shopRatings !== null) {
         setShopRatings(remote.shopRatings || []);
       } else if (role !== 'customer') {
@@ -392,10 +392,12 @@ export function AppProvider({ children }) {
       if (role === 'admin') {
         setPosts(remote.posts || []);
         setOrders(remote.orders || []);
+        setAuditLogs(remote.activityLogs || []);
         setNotifications(remote.notifications || []);
         setCustomers(remote.customers || []);
         setChats(normalizeChats(remote.chats || []));
       } else {
+        setAuditLogs([]);
         if (remote.posts?.length) setPosts((current) => {
           const next = mergePosts([current, remote.posts]);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
@@ -442,6 +444,7 @@ export function AppProvider({ children }) {
     const watchRole = async (role) => {
       const watchId = ++authWatchIdRef.current;
       remoteStateReadyRef.current = false;
+      if (role !== 'admin') setAuditLogs([]);
       unsubscribe();
       activeRole = role;
       sessionStorage.setItem(ACTIVE_PORTAL_KEY, role);
@@ -560,6 +563,8 @@ export function AppProvider({ children }) {
       try {
         remote = await loadRemoteState(remoteUser.id, auth.role);
       } catch (error) {
+        setOrdersRealtimeStatus('reconnecting');
+        setChatRealtimeStatus('reconnecting');
         if (active && auth.role === 'admin') {
           const message = error instanceof Error ? error.message : 'Unknown database error.';
           console.error('[admin] database refresh failed:', message);
@@ -572,14 +577,18 @@ export function AppProvider({ children }) {
         refreshInFlightRef.current = false;
         return;
       }
+      setOrdersRealtimeStatus('connected');
+      setChatRealtimeStatus('connected');
       if (auth.role === 'admin') {
         setVendors(hydrateLocalVendorOverlay(remote.vendors || []));
         setPosts(remote.posts || []);
         setOrders(remote.orders || []);
+        setAuditLogs(remote.activityLogs || []);
         setNotifications(remote.notifications || []);
         setCustomers(remote.customers || []);
         setChats(normalizeChats(remote.chats || []));
       } else {
+        setAuditLogs([]);
         if (remote.vendors?.length) setVendors((current) => {
           const next = mergeById(current, hydrateLocalVendorOverlay(remote.vendors));
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
@@ -666,186 +675,6 @@ export function AppProvider({ children }) {
       window.clearInterval(interval);
     };
   }, [auth.role, remoteUser, showToast]);
-
-  // Supabase Realtime delivers order and order-item changes without waiting for
-  // the periodic refresh below. Re-read the joined rows so status changes and
-  // their item details are reconciled together.
-  useEffect(() => {
-    if (!isSupabaseConfigured) {
-      setOrdersRealtimeStatus('local');
-      return undefined;
-    }
-    if (!remoteUser?.id || !auth.role) {
-      setOrdersRealtimeStatus('disconnected');
-      return undefined;
-    }
-    const client = getSupabaseClient(auth.role);
-    if (!client) {
-      setOrdersRealtimeStatus('disconnected');
-      return undefined;
-    }
-
-    let active = true;
-    let refreshTimer = null;
-    setOrdersRealtimeStatus('connecting');
-    const refreshOrders = async () => {
-      try {
-        const remoteOrders = await loadRemoteOrders(remoteUser.id, auth.role);
-        if (!active || !remoteOrders) return;
-        setOrders((current) => {
-          const next = mergeOrders([current, remoteOrders]);
-          return JSON.stringify(current) === JSON.stringify(next) ? current : next;
-        });
-      } catch (error) {
-        if (active) {
-          const message = error instanceof Error ? error.message : 'Unknown database error.';
-          console.error('[orders] realtime refresh failed:', message);
-        }
-      }
-    };
-    const queueRefresh = (payload) => {
-      if (payload.table === 'orders' && payload.eventType === 'DELETE') {
-        const deletedOrderId = payload.old?.order_number;
-        const deletedDatabaseId = payload.old?.id;
-        if (deletedOrderId != null || deletedDatabaseId != null) {
-          setOrders((current) => current.filter((order) => (
-            deletedOrderId != null
-              ? String(order.id) !== String(deletedOrderId)
-              : String(order.dbId) !== String(deletedDatabaseId)
-          )));
-        }
-      }
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshOrders();
-      }, 150);
-    };
-    const channel = client
-      .channel(`orders:${auth.role}:${remoteUser.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, queueRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, queueRefresh)
-      .subscribe((status, error) => {
-        if (status === 'SUBSCRIBED') {
-          setOrdersRealtimeStatus('connected');
-          void refreshOrders();
-        }
-        else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setOrdersRealtimeStatus('reconnecting');
-          console.error(`[orders] Realtime subscription ${status.toLowerCase()}:`, error?.message || 'connection unavailable');
-        } else if (status === 'CLOSED') {
-          setOrdersRealtimeStatus('disconnected');
-        }
-      });
-
-    return () => {
-      active = false;
-      setOrdersRealtimeStatus('disconnected');
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      void client.removeChannel(channel);
-    };
-  }, [auth.role, remoteUser]);
-
-  // Chat messages are appended through an RPC and delivered immediately through
-  // Realtime; the periodic refresh remains only as a recovery path.
-  useEffect(() => {
-    if (!isSupabaseConfigured) {
-      setChatRealtimeStatus('local');
-      return undefined;
-    }
-    if (!remoteUser?.id || !auth.role) {
-      setChatRealtimeStatus('disconnected');
-      return undefined;
-    }
-    const client = getSupabaseClient(auth.role);
-    if (!client) {
-      setChatRealtimeStatus('disconnected');
-      return undefined;
-    }
-
-    let active = true;
-    let refreshTimer = null;
-    const refreshChats = async () => {
-      try {
-        const remoteChats = await loadRemoteChats(remoteUser.id, auth.role);
-        if (!active || !remoteChats) return;
-        setChats((current) => {
-          const next = mergeChats(current, remoteChats);
-          return JSON.stringify(current) === JSON.stringify(next) ? current : next;
-        });
-      } catch (error) {
-        if (active) {
-          const message = error instanceof Error ? error.message : 'Unknown database error.';
-          console.error('[chat] realtime refresh failed:', message);
-        }
-      }
-    };
-    const queueRefresh = () => {
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshChats();
-      }, 75);
-    };
-    setChatRealtimeStatus('connecting');
-    const channel = client
-      .channel(`chats:${auth.role}:${remoteUser.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, queueRefresh)
-      .subscribe((status, error) => {
-        if (status === 'SUBSCRIBED') {
-          setChatRealtimeStatus('connected');
-          void refreshChats();
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setChatRealtimeStatus('reconnecting');
-          console.error(`[chat] Realtime subscription ${status.toLowerCase()}:`, error?.message || 'connection unavailable');
-        } else if (status === 'CLOSED') {
-          setChatRealtimeStatus('disconnected');
-        }
-      });
-
-    return () => {
-      active = false;
-      setChatRealtimeStatus('disconnected');
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      void client.removeChannel(channel);
-    };
-  }, [auth.role, remoteUser]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !remoteUser?.id || auth.role !== 'customer') return undefined;
-    const client = getSupabaseClient(auth.role);
-    if (!client) return undefined;
-
-    const channel = client
-      .channel(`shop-ratings:${remoteUser.id}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'vendors' }, ({ new: vendor }) => {
-        if (vendor?.legacy_id == null) return;
-        setVendors((current) => current.map((shop) => String(shop.id) === String(vendor.legacy_id)
-          ? {
-            ...shop,
-            rating: Number(vendor.rating) || 0,
-            ratingCount: Number(vendor.rating_count) || 0,
-          }
-          : shop));
-      })
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'shop_ratings',
-        filter: `customer_id=eq.${remoteUser.id}`,
-      }, ({ new: rating }) => {
-        if (!rating) return;
-        const mapped = mapShopRatings([rating])[0];
-        setShopRatings((current) => current.some((item) => String(item.orderNumber) === String(mapped.orderNumber))
-          ? current
-          : [mapped, ...current]);
-      })
-      .subscribe();
-
-    return () => {
-      void client.removeChannel(channel);
-    };
-  }, [auth.role, remoteUser]);
 
   // Sync shared app data across open browser tabs in real time.
   useEffect(() => {
@@ -1321,6 +1150,7 @@ export function AppProvider({ children }) {
     setRemoteUser(null);
     setAuthError('');
     setAuth({ user: null, role: null });
+    setAuditLogs([]);
     setCart([]);
     // The pending set is keyed by user, so an entry left here would only ever be
     // consulted by that same account again -- but it would then protect a row
@@ -1424,7 +1254,7 @@ export function AppProvider({ children }) {
   const uploadMediaFile = useCallback(async (file, folder) => {
     if (!auth.user || !file) return { success: false, message: 'Choose an image first.' };
     if (!file.type.startsWith('image/')) return { success: false, message: 'Please select an image file.' };
-    if (file.size > 5 * 1024 * 1024) return { success: false, message: 'Images must be 5 MB or smaller.' };
+    if (file.size > 4 * 1024 * 1024) return { success: false, message: 'Images must be 4 MB or smaller.' };
     if (supabaseConfigError) return { success: false, message: supabaseConfigError };
     if (isSupabaseConfigured) {
       /*
@@ -1539,19 +1369,27 @@ export function AppProvider({ children }) {
     return { success: true };
   }, [auth, orders, shopRatings, vendors, showToast]);
 
-  // BUYER/VENDOR CHAT
-  const { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction } = useChatActions({
-    setChats,
-    auth,
-    vendors,
-    persistMessage: isSupabaseConfigured ? persistChatMessage : null,
-    showToast,
-  });
-
   // NOTIFICATIONS
   const addNotification = useCallback((notif) => {
     setNotifications((n) => [{ ...notif, read: false, createdAt: new Date().toISOString(), id: nextNotificationId() }, ...n]);
   }, [nextNotificationId]);
+
+  // BUYER/VENDOR CHAT
+  const {
+    getOrCreateChat,
+    sendChatMessage,
+    sendChatMenu,
+    sendChatOrderReceipt,
+    toggleChatReaction,
+    markChatMessageRead,
+  } = useChatActions({
+    setChats,
+    auth,
+    vendors,
+    persistMessage: isSupabaseConfigured ? persistChatMessage : null,
+    persistMessageRead: isSupabaseConfigured ? persistChatMessageRead : null,
+    showToast,
+  });
 
   // ORDERS
   const placeOrder = useCallback(({ customer, vendor, items, paymentMethod, fulfillment, gcashRef, specialInstructions }) => {
@@ -2022,6 +1860,7 @@ export function AppProvider({ children }) {
     customers,
     admins,
     orders,
+    auditLogs,
     posts,
     notifications,
     platformSettings,
@@ -2059,6 +1898,7 @@ export function AppProvider({ children }) {
     sendChatMenu,
     sendChatOrderReceipt,
     toggleChatReaction,
+    markChatMessageRead,
     // orders
     placeOrder,
     rateShop,

@@ -37,6 +37,32 @@ npm run preview
 Never put a Supabase `service_role` or secret key in a `VITE_*` variable. Vite
 embeds `VITE_*` values in the browser bundle. Local `.env*` files are ignored by
 Git; `.env.example` contains placeholders only.
+The `VITE_SUPABASE_ANON_KEY` is a public publishable key and is expected to be
+visible in the browser; protect database data with Row Level Security (RLS).
+Auth, database, and storage requests go through the same-origin Vercel Function
+in `api/supabase/[...path].js`. The browser never receives the Supabase access
+or refresh token: the server encrypts them into a role-specific `HttpOnly`,
+`Secure` (on HTTPS), `SameSite=Lax` cookie and strips browser Authorization
+headers before proxying. The SDK keeps only an opaque placeholder in the
+tab-scoped `sessionStorage`; opening DevTools can show that placeholder and the
+encrypted cookie, but not the Supabase access token. A person controlling the
+browser/device can still inspect browser traffic and cookies.
+
+Set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SESSION_ENCRYPTION_KEY` as server
+environment variables in Vercel (for Production, Preview, and Development).
+The anon key is public and is not a service-role key. Generate the encryption
+key locally with:
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+Keep `SESSION_ENCRYPTION_KEY` only in server environment settings or a local
+ignored `.env` file; never prefix it with `VITE_` or commit it. Local Vite dev
+uses the same BFF and requires those server variables. Supabase Realtime
+WebSockets are replaced by 15-second polling so browser requests do not need
+the access token. Image uploads are limited to 4 MB to fit Vercel Function
+request-body limits while passing through the BFF.
 
 ## Supabase account data
 
@@ -50,10 +76,13 @@ that uses it and its role in the workflow.
 See [`DATABASE_DESIGN.md`](./DATABASE_DESIGN.md) for portal-by-portal data
 flows, access notes, entity relationships, and the field/type dictionary.
 Existing marketplace table names are retained for compatibility with the app.
+Database triggers record cross-portal changes in `activity_logs`, which is
+readable only by admins and powers the Admin Audit Logs page.
 
 Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
-to create or reconcile the complete schema, including the role-specific profile
-tables, data backfill, RLS policies, and compatibility trigger. The old
+to create or reconcile the complete schema, including role-specific profile
+tables, data backfill, activity audit trail, RLS policies, and the compatibility
+trigger. The old
 `profiles` detail columns remain synchronized so deployed older clients
 continue working; do not remove them until those clients have been retired.
 

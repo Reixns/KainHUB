@@ -23,6 +23,7 @@ export {
   loadRemoteOrders,
   loadRemoteChats,
   persistChatMessage,
+  persistChatMessageRead,
   persistShopRating,
   persistOrderStatus,
   persistState,

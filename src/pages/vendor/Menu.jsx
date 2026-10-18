@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Pencil, Trash2, PackageX, Package, Megaphone, Share2, UtensilsCrossed, ImagePlus } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, formatPeso, Modal, Textarea, Badge, ConfirmDialog, EmptyState, getProductImage } from '@/components/UI';
+import ProductCategoryField from '@/components/ProductCategoryField';
 
 export default function VendorMenu() {
   const { auth, addVendorMenu, updateVendorMenu, deleteVendorMenu, postVendorProduct, uploadMediaFile, showToast } = useApp();
@@ -196,7 +197,11 @@ export default function VendorMenu() {
             <Input label="Price (₱)" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             <Input label="Stock" type="number" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
           </div>
-          <Input label="Category" placeholder="e.g. Rice Meals, Drinks, Snacks" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+          <ProductCategoryField
+            value={form.category}
+            onChange={(category) => setForm((current) => ({ ...current, category }))}
+            categories={menu.map((item) => item.category)}
+          />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.available} onChange={(e) => setForm({ ...form, available: e.target.checked })} />
             Available for ordering

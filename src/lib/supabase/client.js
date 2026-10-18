@@ -32,27 +32,43 @@ export const isSupabaseConfigured = Boolean(
 const clients = {};
 const roleStorageKey = (role) => `lancaster_${role}_supabase_session`;
 
+/*
+  Earlier builds persisted bearer tokens in localStorage. Remove those copies
+  rather than migrating them: sessionStorage is scoped to this tab, and copying
+  every role's old session into one tab could expose another portal there.
+  Users with only an old persisted session will need to sign in again.
+*/
+if (typeof window !== 'undefined') {
+  try {
+    for (const role of ['admin', 'vendor', 'customer']) {
+      window.localStorage.removeItem(roleStorageKey(role));
+      const sessionKey = roleStorageKey(role);
+      const saved = window.sessionStorage.getItem(sessionKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (typeof parsed?.access_token === 'string' && parsed.access_token.split('.').length === 3) {
+            window.sessionStorage.removeItem(sessionKey);
+          }
+        } catch {
+          window.sessionStorage.removeItem(sessionKey);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[supabase] unable to remove legacy browser session storage.', error);
+  }
+}
+
 export const getAuthRedirectUrl = (role, path = 'login') => {
   if (typeof window === 'undefined') return undefined;
   return `${window.location.origin}/${role}/${path}`;
 };
 
 /*
-  Every role gets its own client and its own storage key, which is right -- a
-  vendor session must never be readable as a customer one. But that also means
-  three independent copies of the same session token in localStorage, and each
-  one can reach a different point in its life. A token that has expired is the
-  cause of the "401 on every table, then 42501 on the writes" pattern: the
-  expired JWT is sent as the bearer credential, PostgREST rejects it with 401,
-  and because RLS evaluates `user_id = auth.uid()::text` against a NULL uid,
-  every policy then denies the write as 42501. The 42501 is a symptom; the 401
-  is the fault.
-
-  supabase-js refreshes a token that is close to expiry on its own, but not one
-  that already lapsed while the tab was closed or the machine was asleep, and it
-  does not clear a session it can no longer refresh. Both cases leave a stored
-  token that will be sent forever. The helpers below drop those, so the app
-  falls back to signed-out instead of silently failing every request.
+  Each role has an independent SDK session in tab-scoped storage. Its access
+  and refresh values are opaque placeholders; the BFF substitutes the encrypted
+  server-held Supabase credentials and never accepts a browser bearer token.
 */
 const clearUnusableSession = async (role) => {
   try {
@@ -94,6 +110,35 @@ const isAuthCredentialError = (error) => {
 export function getSupabaseClient(role = 'customer') {
   if (!isSupabaseConfigured) return null;
   if (!clients[role]) {
+    const proxyFetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (typeof window === 'undefined' || !url.href.startsWith(`${supabaseUrl}/`)) {
+        return fetch(request);
+      }
+
+      const proxyUrl = new URL(`/api/supabase/${role}${url.pathname}${url.search}`, window.location.origin);
+      const headers = new Headers(request.headers);
+      headers.delete('authorization');
+      headers.delete('apikey');
+      const csrfKey = `kainhub_${role}_csrf`;
+      const csrfToken = window.sessionStorage.getItem(csrfKey);
+      if (csrfToken) headers.set('x-kainhub-csrf', csrfToken);
+      const options = {
+        method: request.method,
+        headers,
+        credentials: 'include',
+        signal: request.signal,
+      };
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        options.body = await request.arrayBuffer();
+      }
+      const response = await fetch(proxyUrl, options);
+      const nextCsrfToken = response.headers.get('x-kainhub-csrf');
+      if (nextCsrfToken) window.sessionStorage.setItem(csrfKey, nextCsrfToken);
+      return response;
+    };
+
     clients[role] = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         persistSession: true,
@@ -105,13 +150,14 @@ export function getSupabaseClient(role = 'customer') {
         // expires sooner and leaves the credential in browser history. PKCE
         // keeps long-lived sessions from lapsing while a tab sits open.
         flowType: 'pkce',
-        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+        storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
         storageKey: roleStorageKey(role),
       },
       global: {
         fetch: async (input, init) => {
-          const response = await fetch(input, init);
-          if (response.status === 401 && String(input).includes('/rest/v1/')) {
+          const requestUrl = input instanceof Request ? input.url : String(input);
+          const response = await proxyFetch(input, init);
+          if (response.status === 401 && requestUrl.includes('/rest/v1/')) {
             await clearUnusableSession(role);
           }
           return response;

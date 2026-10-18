@@ -40,7 +40,7 @@ export default function VendorKDS() {
           <h1 className="text-2xl font-bold text-ink tracking-tight">Kitchen Display</h1>
           <p className="text-sm text-muted">Move each ticket through to pickup or delivery.</p>
         </div>
-        <RealtimeStatus status={ordersRealtimeStatus} />
+        <PollingStatus status={ordersRealtimeStatus} />
       </div>
 
       <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} label="Order status" />
@@ -238,16 +238,16 @@ function OrderCard({ order, shop, onUpdate, onReject, saving }) {
   );
 }
 
-function RealtimeStatus({ status }) {
+function PollingStatus({ status }) {
   const connected = status === 'connected';
   const local = status === 'local';
   const label = connected
-    ? 'Live updates connected'
+    ? 'Updates check every 15 seconds'
     : status === 'reconnecting'
-      ? 'Reconnecting to live updates...'
+      ? 'Retrying data refresh...'
       : local
-        ? 'Local mode — orders are not shared'
-        : 'Connecting to live updates...';
+        ? 'Local mode - orders are not shared'
+        : 'Checking for updates...';
   return (
     <div
       className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ${

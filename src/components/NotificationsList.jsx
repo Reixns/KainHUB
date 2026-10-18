@@ -58,8 +58,10 @@ const VENDOR_STYLES = {
 
 export function NotificationsList({ styles, emptyDescription = "You're all caught up!" }) {
   const { auth, notifications, markNotifRead, markAllNotifRead, dismissNotification } = useApp();
-
-  const mine = notifications.filter((n) => String(n.userId) === String(auth.user.id));
+  const mine = notifications.filter((n) => (
+    String(n.userId) === String(auth.user.id)
+    || (auth.user.ownerId && String(n.userId) === String(auth.user.ownerId))
+  ) && n.type !== 'chat');
   const now = useMinuteNow(mine.some((n) => n.expiresAt));
 
   /*

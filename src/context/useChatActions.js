@@ -36,7 +36,7 @@ const chatKey = (vendorId, customerId) => `chat-${vendorId}-${customerId}`;
 */
 const sameParticipant = (left, right) => String(left ?? '') === String(right ?? '');
 
-export function useChatActions({ setChats, auth, vendors, persistMessage, showToast }) {
+export function useChatActions({ setChats, auth, vendors, persistMessage, persistMessageRead, showToast }) {
   const persistImmediately = useCallback((payload, role = auth.role) => {
     if (!persistMessage || !auth.user) return;
     void persistMessage(payload, role).catch((error) => {
@@ -124,6 +124,7 @@ export function useChatActions({ setChats, auth, vendors, persistMessage, showTo
           text: replyTo.text,
         },
       } : {}),
+      readAt: null,
       createdAt: new Date().toISOString(),
     };
     setChats((current) => appendMessage(current, {
@@ -134,6 +135,28 @@ export function useChatActions({ setChats, auth, vendors, persistMessage, showTo
     }));
     persistImmediately({ chatId, vendorId, customerId, message });
   }, [setChats, auth, persistImmediately]);
+
+  const markChatMessageRead = useCallback(({ chatId, vendorId, customerId, messageId }) => {
+    if (!auth.user || !chatId || !messageId) return;
+    const readAt = new Date().toISOString();
+    setChats((current) => normalizeChats(current.map((chat) => {
+      if (chat.id !== chatId) return chat;
+      return {
+        ...chat,
+        messages: (chat.messages || []).map((message) => {
+          if (String(message.id) !== String(messageId)
+            || message.senderRole === auth.role
+            || message.readAt) return message;
+          return { ...message, readAt };
+        }),
+      };
+    })));
+    if (persistMessageRead) {
+      void persistMessageRead({ chatId, vendorId, customerId, messageId }, auth.role).catch((error) => {
+        console.error('[chat] read receipt could not be saved:', error);
+      });
+    }
+  }, [setChats, auth, persistMessageRead]);
 
   const sendChatMenu = useCallback(({ vendorId, customerId }) => {
     if (!auth.user || auth.role !== 'vendor') return;
@@ -186,5 +209,5 @@ export function useChatActions({ setChats, auth, vendors, persistMessage, showTo
     return chatId;
   }, [setChats, auth, persistImmediately]);
 
-  return { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction };
+  return { getOrCreateChat, sendChatMessage, sendChatMenu, sendChatOrderReceipt, toggleChatReaction, markChatMessageRead };
 }

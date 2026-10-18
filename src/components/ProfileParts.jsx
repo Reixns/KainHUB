@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ImagePlus } from 'lucide-react';
 import { isImageSource, CARD_FOCUS_RING } from '@/components/UI';
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export function InfoRow({ icon, label, value }) {
   return (
@@ -30,7 +30,7 @@ export function MediaButton({ label, folder, loading, uploading, uploadMediaFile
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
-      showToast('Image must be under 5 MB.', 'error');
+      showToast('Image must be under 4 MB.', 'error');
       return;
     }
     uploading(folder);

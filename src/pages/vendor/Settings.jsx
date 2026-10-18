@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Truck, Save, Clock, Info } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input } from '@/components/UI';
+import FoodCategoryField from '@/components/FoodCategoryField';
 
 export default function VendorSettings() {
   const { auth, updateVendor } = useApp();
@@ -39,7 +40,11 @@ export default function VendorSettings() {
         <h2 className="font-semibold text-ink mb-4 flex items-center gap-2"><Info className="w-5 h-5" /> Store Information</h2>
         <div className="space-y-3">
           <Input label="Shop Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Input label="Category" placeholder="e.g. Filipino Meals, Desserts, Drinks" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+          <FoodCategoryField
+            value={form.category}
+            onChange={(category) => setForm((current) => ({ ...current, category }))}
+            theme="light"
+          />
           <Input label="Operating Hours" icon={Clock} value={form.operatingHours} onChange={(e) => setForm({ ...form, operatingHours: e.target.value })} />
           <div>
             <label className="block text-sm font-medium text-body mb-1">Description</label>

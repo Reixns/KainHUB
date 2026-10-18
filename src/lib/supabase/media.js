@@ -1,13 +1,13 @@
 import { getSupabaseClient } from '@/lib/supabase/client';
 
 const BUCKET = 'marketplace-media';
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export async function uploadMedia(file, folder, userId, role = 'customer') {
   const client = getSupabaseClient(role);
   if (!client || !file || !userId) return { data: null, error: new Error('Media upload is unavailable.') };
   if (!file.type.startsWith('image/')) return { data: null, error: new Error('Please select an image file.') };
-  if (file.size > MAX_IMAGE_BYTES) return { data: null, error: new Error('Images must be 5 MB or smaller.') };
+  if (file.size > MAX_IMAGE_BYTES) return { data: null, error: new Error('Images must be 4 MB or smaller.') };
   const extension = file.name.split('.').pop()?.toLowerCase() || 'jpg';
   const uniqueId = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const path = `${userId}/${folder}/${uniqueId}.${extension}`;

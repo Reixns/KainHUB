@@ -17,6 +17,8 @@ import {
 import { useApp } from '@/context/AppContext';
 import { Button, Input, PlatformLogo, Textarea } from '@/components/UI';
 import { validatePassword } from '@/lib/supabase';
+import FoodCategoryField from '@/components/FoodCategoryField';
+import PasswordRequirements from '@/components/PasswordRequirements';
 
 export default function VendorRegister() {
   const { registerVendor, platformSettings } = useApp();
@@ -140,7 +142,7 @@ export default function VendorRegister() {
                   <Input label="Mobile number" icon={Phone} type="tel" value={form.mobile} onChange={updateField('mobile')} error={errors.mobile} autoComplete="tel" required className="register-input lg:!py-2" />
                   <Input label="Email address" icon={Mail} type="email" value={form.email} onChange={updateField('email')} error={errors.email} autoComplete="email" required className="register-input lg:!py-2" />
                   <Input label="Shop address (Zone 1)" icon={MapPin} value={form.shopAddress} onChange={updateField('shopAddress')} error={errors.shopAddress} autoComplete="street-address" required className="register-input sm:col-span-2 lg:!py-2" />
-                  <Input label="Food category" placeholder="e.g. Filipino meals, desserts, drinks" value={form.category} onChange={updateField('category')} error={errors.category} required className="register-input lg:!py-2" />
+                  <FoodCategoryField value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} error={errors.category} />
                   <Input label="Operating hours" icon={Clock} value={form.operatingHours} onChange={updateField('operatingHours')} className="register-input lg:!py-2" />
                   <Textarea
                     label="About your shop"
@@ -166,9 +168,7 @@ export default function VendorRegister() {
                 <div className="grid gap-2.5 sm:grid-cols-2">
                   <Input label="Password" icon={Lock} type={showPassword ? 'text' : 'password'} value={form.password} onChange={updateField('password')} error={errors.password} autoComplete="new-password" placeholder="Create a strong password" required className="register-input lg:!py-2" endAdornment={<button type="button" onClick={() => setShowPassword((visible) => !visible)} aria-pressed={showPassword} aria-label={showPassword ? 'Hide password' : 'Show password'} className="inline-flex h-10 w-10 items-center justify-center rounded-control text-white/50 transition-colors hover:bg-white/[0.06] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">{showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}</button>} />
                   <Input label="Confirm password" icon={Lock} type={showConfirmPassword ? 'text' : 'password'} value={form.confirmPassword} onChange={updateField('confirmPassword')} error={errors.confirmPassword} autoComplete="new-password" placeholder="Enter it again" required className="register-input lg:!py-2" endAdornment={<button type="button" onClick={() => setShowConfirmPassword((visible) => !visible)} aria-pressed={showConfirmPassword} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'} className="inline-flex h-10 w-10 items-center justify-center rounded-control text-white/50 transition-colors hover:bg-white/[0.06] hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">{showConfirmPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}</button>} />
-                  <p className="text-xs leading-5 text-white/45 sm:col-span-2">
-                    Use at least 8 characters with uppercase and lowercase letters, a number, and a symbol.
-                  </p>
+                  <PasswordRequirements password={form.password} email={form.email} fullName={form.ownerName} />
                 </div>
               </section>
 

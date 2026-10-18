@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { AppProvider } from '@/context/AppContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import SessionSkeleton from '@/components/SessionSkeleton';
 
 // Layouts
 import CustomerLayout from '@/layouts/CustomerLayout';
@@ -172,7 +173,7 @@ export default function App() {
     <AppProvider>
       <BrowserRouter>
         <RouteEffects />
-        <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-body" role="status">Loading...</div>}>
+        <Suspense fallback={<SessionSkeleton />}>
           <Routes>
           {/* Landing / Portal Selector */}
           <Route path="/" element={<Landing />} />

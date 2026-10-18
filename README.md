@@ -51,12 +51,11 @@ See [`DATABASE_DESIGN.md`](./DATABASE_DESIGN.md) for portal-by-portal data
 flows, access notes, entity relationships, and the field/type dictionary.
 Existing marketplace table names are retained for compatibility with the app.
 
-For the staged role-profile rollout, run
-[`supabase/migrations/20261018_separate_role_profiles.sql`](./supabase/migrations/20261018_separate_role_profiles.sql)
-in the Supabase SQL Editor before deploying the updated frontend. It is
-additive, backfills existing accounts, and keeps the old `profiles` detail
-columns synchronized so the currently deployed app continues working. Do not
-remove those compatibility columns until all older clients have been retired.
+Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
+to create or reconcile the complete schema, including the role-specific profile
+tables, data backfill, RLS policies, and compatibility trigger. The old
+`profiles` detail columns remain synchronized so deployed older clients
+continue working; do not remove them until those clients have been retired.
 
 ## Publish changes
 

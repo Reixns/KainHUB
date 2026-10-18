@@ -418,9 +418,7 @@ policy.
 
 ## 6. Applying the Design
 
-For a safe staged release, first run
-[`supabase/migrations/20261018_separate_role_profiles.sql`](./supabase/migrations/20261018_separate_role_profiles.sql)
-in the Supabase SQL Editor. It creates and backfills role tables without
-removing compatibility data. Then deploy the matching frontend. The full
-canonical schema and verification script is
-[`supabase/schema.sql`](./supabase/schema.sql).
+Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
+to apply the full schema, including creation and backfill of role-specific
+profiles, RLS policies, and the compatibility trigger. Deploy the matching
+frontend to switch application reads and writes to the role profile tables.

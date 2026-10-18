@@ -3,24 +3,22 @@
 -- =============================================================================
 --
 -- HOW TO RUN
---   For an existing deployment, first run
---   supabase/migrations/20261018_separate_role_profiles.sql in SQL Editor, then
---   deploy the updated frontend. It is additive and keeps older clients working.
---   Run this full schema after the matching frontend is deployed.
+--   Supabase dashboard > SQL Editor > New query > paste this whole file > Run.
 --
 --   This is the canonical full-schema script for fresh and existing databases.
---   It reconciles active tables inside a single transaction; any failure rolls
---   the transaction back. It also permanently drops the specific legacy objects
---   listed below. Review/backup those objects before running this full script.
+--   It creates/backfills role-specific profiles and reconciles active tables
+--   inside a single transaction; any failure rolls the transaction back. It
+--   also permanently drops the specific legacy objects listed below.
+--   Review/backup those objects before running this full script.
 --
 --   It does not truncate active portal tables or remove account/order/shop
 --   records. The objects it drops are the retired table/columns listed below,
 --   plus the temporary `_canonical_columns` table. It never weakens RLS.
 --
 -- DEPLOY ORDER
---   The role-profile migration above is safe before frontend deployment. The
---   full script still retires unused legacy objects, so deploy the matching
---   frontend before running this full schema against an existing database.
+--   This script keeps legacy profile columns synchronized so older clients
+--   remain compatible. Deploy the matching frontend to use role-profile reads
+--   and writes. The script also retires the unrelated legacy objects below.
 --
 -- RETIRED OBJECTS  (dropped by section 6, after their data is merged)
 --   post_comments

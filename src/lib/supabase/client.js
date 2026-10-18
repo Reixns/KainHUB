@@ -32,34 +32,6 @@ export const isSupabaseConfigured = Boolean(
 const clients = {};
 const roleStorageKey = (role) => `lancaster_${role}_supabase_session`;
 
-/*
-  Earlier builds persisted bearer tokens in localStorage. Remove those copies
-  rather than migrating them: sessionStorage is scoped to this tab, and copying
-  every role's old session into one tab could expose another portal there.
-  Users with only an old persisted session will need to sign in again.
-*/
-if (typeof window !== 'undefined') {
-  try {
-    for (const role of ['admin', 'vendor', 'customer']) {
-      window.localStorage.removeItem(roleStorageKey(role));
-      const sessionKey = roleStorageKey(role);
-      const saved = window.sessionStorage.getItem(sessionKey);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (typeof parsed?.access_token === 'string' && parsed.access_token.split('.').length === 3) {
-            window.sessionStorage.removeItem(sessionKey);
-          }
-        } catch {
-          window.sessionStorage.removeItem(sessionKey);
-        }
-      }
-    }
-  } catch (error) {
-    console.warn('[supabase] unable to remove legacy browser session storage.', error);
-  }
-}
-
 export const getAuthRedirectUrl = (role, path = 'login') => {
   if (typeof window === 'undefined') return undefined;
   return `${window.location.origin}/${role}/${path}`;
@@ -110,35 +82,6 @@ const isAuthCredentialError = (error) => {
 export function getSupabaseClient(role = 'customer') {
   if (!isSupabaseConfigured) return null;
   if (!clients[role]) {
-    const proxyFetch = async (input, init) => {
-      const request = new Request(input, init);
-      const url = new URL(request.url);
-      if (typeof window === 'undefined' || !url.href.startsWith(`${supabaseUrl}/`)) {
-        return fetch(request);
-      }
-
-      const proxyUrl = new URL(`/api/supabase/${role}${url.pathname}${url.search}`, window.location.origin);
-      const headers = new Headers(request.headers);
-      headers.delete('authorization');
-      headers.delete('apikey');
-      const csrfKey = `kainhub_${role}_csrf`;
-      const csrfToken = window.sessionStorage.getItem(csrfKey);
-      if (csrfToken) headers.set('x-kainhub-csrf', csrfToken);
-      const options = {
-        method: request.method,
-        headers,
-        credentials: 'include',
-        signal: request.signal,
-      };
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        options.body = await request.arrayBuffer();
-      }
-      const response = await fetch(proxyUrl, options);
-      const nextCsrfToken = response.headers.get('x-kainhub-csrf');
-      if (nextCsrfToken) window.sessionStorage.setItem(csrfKey, nextCsrfToken);
-      return response;
-    };
-
     clients[role] = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         persistSession: true,
@@ -150,13 +93,22 @@ export function getSupabaseClient(role = 'customer') {
         // expires sooner and leaves the credential in browser history. PKCE
         // keeps long-lived sessions from lapsing while a tab sits open.
         flowType: 'pkce',
-        storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
+        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
         storageKey: roleStorageKey(role),
       },
       global: {
         fetch: async (input, init) => {
           const requestUrl = input instanceof Request ? input.url : String(input);
-          const response = await proxyFetch(input, init);
+          const request = new Request(input, init);
+          const options = {
+            method: request.method,
+            headers: request.headers,
+            signal: request.signal,
+          };
+          if (request.method !== 'GET' && request.method !== 'HEAD') {
+            options.body = await request.arrayBuffer();
+          }
+          const response = await fetch(request.url, options);
           if (response.status === 401 && requestUrl.includes('/rest/v1/')) {
             await clearUnusableSession(role);
           }

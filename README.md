@@ -40,29 +40,10 @@ Git; `.env.example` contains placeholders only.
 The `VITE_SUPABASE_ANON_KEY` is a public publishable key and is expected to be
 visible in the browser; protect database data with Row Level Security (RLS).
 Auth, database, and storage requests go through the same-origin Vercel Function
-in `api/supabase.js`. The browser never receives the Supabase access
-or refresh token: the server encrypts them into a role-specific `HttpOnly`,
-`Secure` (on HTTPS), `SameSite=Lax` cookie and strips browser Authorization
-headers before proxying. The SDK keeps only an opaque placeholder in the
-tab-scoped `sessionStorage`; opening DevTools can show that placeholder and the
-encrypted cookie, but not the Supabase access token. A person controlling the
-browser/device can still inspect browser traffic and cookies.
-
-Set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SESSION_ENCRYPTION_KEY` as server
-environment variables in Vercel (for Production, Preview, and Development).
-The anon key is public and is not a service-role key. Generate the encryption
-key locally with:
-
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
-```
-
-Keep `SESSION_ENCRYPTION_KEY` only in server environment settings or a local
-ignored `.env` file; never prefix it with `VITE_` or commit it. Local Vite dev
-uses the same BFF and requires those server variables. Supabase Realtime
-WebSockets are replaced by 15-second polling so browser requests do not need
-the access token. Image uploads are limited to 4 MB to fit Vercel Function
-request-body limits while passing through the BFF.
+go directly to Supabase using the public anon/publishable key and the Supabase
+client's per-role browser session. The browser must never use a `service_role`
+or secret key. Supabase Realtime WebSockets are replaced by 15-second polling.
+Image uploads are limited to 4 MB.
 
 ## Supabase account data
 
@@ -104,12 +85,9 @@ git push
 
 The [`kainhub` Vercel project](https://vercel.com/reianromasanta09-9537s-projects/kainhub) uses the repository root,
 `npm run build`, and `dist`; [`vercel.json`](./vercel.json) also rewrites SPA
-routes while directing `/api/supabase/*` to the Supabase proxy function and
-excluding API paths from the SPA fallback. Production deploys automatically from
-`main`; other branches receive preview deployments. The Supabase URL and
-publishable browser key are configured for Production and Preview in Vercel.
-Configure `SESSION_ENCRYPTION_KEY` there as a server-side environment variable
-as well; the Supabase proxy returns a JSON configuration error until it exists.
+routes. Production deploys automatically from `main`; other branches receive
+preview deployments. The Supabase URL and publishable browser key are configured
+for Production and Preview in Vercel.
 
 In **Supabase → Authentication → URL Configuration**, keep the Site URL set to
 `https://kainhub-cyan.vercel.app` and allow these redirect URLs:

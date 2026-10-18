@@ -5,11 +5,7 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/api/supabase/:role/:path*",
-      "destination": "/api/supabase?__kainhub_role=:role&__kainhub_path=:path*"
-    },
-    {
-      "source": "/:path((?!api/).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ],

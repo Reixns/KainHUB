@@ -104,7 +104,8 @@ git push
 
 The [`kainhub` Vercel project](https://vercel.com/reianromasanta09-9537s-projects/kainhub) uses the repository root,
 `npm run build`, and `dist`; [`vercel.json`](./vercel.json) also rewrites SPA
-routes. Production deploys automatically from `main`; other branches receive
+routes while excluding `/api/*` so the Supabase proxy function receives API
+requests. Production deploys automatically from `main`; other branches receive
 preview deployments. The Supabase URL and publishable browser key are configured
 for Production and Preview in Vercel.
 

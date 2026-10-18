@@ -52,12 +52,32 @@ export async function upsertProfile(userId, values, role = 'customer') {
     console.error(`[supabase] cannot save a profile for unsupported role "${role}".`);
     return null;
   }
-  const result = await writeTolerant({
+  const profileValues = { id: userId, role, ...values };
+  const onProfileWriteError = (operation) => (error) => {
+    console.error(`[supabase] ${operation} on "profiles" failed: ${error.code || ''} ${error.message || ''}`.trim());
+  };
+
+  // Postgres checks INSERT policies for ON CONFLICT upserts too. The profiles
+  // insert policy intentionally only permits customer self-registration, so
+  // routine vendor/admin profile saves must update their existing row instead.
+  let result = await writeTolerant({
     table: 'profiles',
-    values: { id: userId, role, ...values },
-    run: (row) => client.from('profiles').upsert(row).select().single(),
-    onError: (error) => console.error(`[supabase] upsert on "profiles" failed: ${error.code || ''} ${error.message || ''}`.trim()),
+    values: profileValues,
+    run: (row) => client.from('profiles').update(row).eq('id', userId).select().maybeSingle(),
+    onError: onProfileWriteError('update'),
   });
+  if (!result?.data && !result?.error) {
+    if (role !== 'customer') {
+      console.error(`[supabase] cannot insert a missing ${role} row into "profiles"; it must be created by the signup trigger.`);
+      return null;
+    }
+    result = await writeTolerant({
+      table: 'profiles',
+      values: profileValues,
+      run: (row) => client.from('profiles').insert(row).select().single(),
+      onError: onProfileWriteError('insert'),
+    });
+  }
   if (!result?.data) return null;
 
   const details = Object.fromEntries(PROFILE_DETAILS

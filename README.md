@@ -40,7 +40,7 @@ Git; `.env.example` contains placeholders only.
 The `VITE_SUPABASE_ANON_KEY` is a public publishable key and is expected to be
 visible in the browser; protect database data with Row Level Security (RLS).
 Auth, database, and storage requests go through the same-origin Vercel Function
-in `api/supabase/[...path].js`. The browser never receives the Supabase access
+in `api/supabase.js`. The browser never receives the Supabase access
 or refresh token: the server encrypts them into a role-specific `HttpOnly`,
 `Secure` (on HTTPS), `SameSite=Lax` cookie and strips browser Authorization
 headers before proxying. The SDK keeps only an opaque placeholder in the
@@ -108,6 +108,8 @@ routes while directing `/api/supabase/*` to the Supabase proxy function and
 excluding API paths from the SPA fallback. Production deploys automatically from
 `main`; other branches receive preview deployments. The Supabase URL and
 publishable browser key are configured for Production and Preview in Vercel.
+Configure `SESSION_ENCRYPTION_KEY` there as a server-side environment variable
+as well; the Supabase proxy returns a JSON configuration error until it exists.
 
 In **Supabase → Authentication → URL Configuration**, keep the Site URL set to
 `https://kainhub-cyan.vercel.app` and allow these redirect URLs:

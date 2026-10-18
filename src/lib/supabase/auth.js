@@ -6,7 +6,12 @@ export async function signIn(email, password, requestedRole) {
   const client = getSupabaseClient(requestedRole);
   if (!client) return { data: null, error: new Error('Supabase is not configured.') };
   const result = await client.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
-  if (result.error) return result;
+  if (result.error) {
+    const error = result.error;
+    const invalidCredentials = error.code === 'invalid_credentials'
+      || /invalid login credentials/i.test(error.message || '');
+    return { ...result, countAttempt: invalidCredentials };
+  }
   const { data: profile, error: profileError } = await fetchProfileRecord(client, result.data.user.id);
   if (profileError) {
     await client.auth.signOut();

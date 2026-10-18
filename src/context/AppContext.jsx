@@ -876,6 +876,7 @@ export function AppProvider({ children }) {
       return {
         success: false,
         message: remote.error?.message || 'Unable to sign in with this Supabase account.',
+        countAttempt: remote.countAttempt === true,
       };
     }
     if (role === 'customer') {
@@ -918,7 +919,7 @@ export function AppProvider({ children }) {
         return { success: true };
       }
     }
-    return { success: false, message: 'Invalid email or password.' };
+    return { success: false, message: 'Invalid email or password.', countAttempt: true };
   }, [customers, vendors, admins, notifyAccountLogin, showToast]);
 
   const requestPhoneOtp = useCallback(async (phone, role) => {

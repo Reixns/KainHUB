@@ -179,6 +179,9 @@ export default function RoleLogin({ config }) {
         setFailedAttempts(0);
         setLockUntil(0);
         navigate(location.state?.from || redirectTo, { replace: true });
+      } else if (!result.countAttempt) {
+        setError(`${result.message || 'Unable to sign in.'} This did not count as a failed password attempt.`);
+        resetCaptcha();
       } else {
         const attempt = registerFailedAttempt(role, email);
         setFailedAttempts(attempt.fails);

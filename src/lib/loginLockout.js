@@ -1,16 +1,16 @@
 /*
-  Brute-force protection for the login portals.
+  Client-side fallback brute-force protection for the login portals.
 
-  This used to live entirely in component state inside RoleLogin.jsx, which made
-  it worthless: a reload threw the failure streak away, so "three wrong
-  passwords then a five minute lock" could be bypassed with a single refresh,
-  and the streak never grew because it was reset when the timer expired. The
-  streak now lives in localStorage keyed by role + email, so it survives a
-  reload, a tab close, and switching between the three portals.
+  The authoritative lock now lives in the database (login_attempts plus the
+  login_status / record_failed_login RPCs): three wrong passwords wait five
+  minutes, the next three wait ten, and the ninth is a permanent lock that only
+  the email recovery link clears. This module is what runs when that database
+  migration is not present yet, and as a reload-resistant throttle on top of it.
+  Its own tiers step by five minutes each (5, 10, 15, ... capped at an hour) and
+  it never sees DB state, so the two are only ever used one at a time.
 
-  Still client-side: this deters casual guessing and stops the cheapest
-  automated attempts. It is not a substitute for server-side rate limiting,
-  which needs a Supabase edge function with the service-role key. Nothing here
+  The streak lives in localStorage keyed by role + email, so it survives a
+  reload, a tab close, and switching between the three portals. Nothing here
   ever stores the attempted password.
 */
 

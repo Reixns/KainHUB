@@ -73,7 +73,7 @@ export default function CustomerLayout() {
         and the mobile search row below it does not move.
       */}
       <header className="sticky top-0 z-50 shrink-0 border-b border-white/10 bg-[#101014] pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex h-14 min-w-0 max-w-7xl items-center gap-3 px-4 lg:gap-4 lg:px-8">
+        <div className="mx-auto flex h-14 min-w-0 max-w-7xl items-center gap-3 pr-4 pl-[max(1rem,env(safe-area-inset-left))] lg:gap-4 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))]">
           <Link to="/customer" className="flex items-center gap-2.5 shrink-0" aria-label="KainHUB home">
             <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden text-white">
               <PlatformLogo src={platformSettings.logo} alt="" />
@@ -235,9 +235,9 @@ export default function CustomerLayout() {
         when the phone is held in landscape. max() keeps the normal 12px gutter
         on every device that reports a 0 inset.
       */}
-        <main className={`w-full min-w-0 max-w-7xl mx-auto page-enter pl-[max(0.75rem,env(safe-area-inset-left))] ${isMessagesPage
-          ? 'flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-0 pt-2 sm:px-4 lg:px-8 lg:py-4'
-          : 'px-3 py-5 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:px-4 sm:py-6 lg:px-8 lg:py-8 lg:pb-0'
+        <main className={`w-full min-w-0 max-w-7xl mx-auto page-enter ${isMessagesPage
+          ? 'flex min-h-0 flex-1 flex-col overflow-hidden pb-0 pt-2 pr-3 pl-[max(0.75rem,env(safe-area-inset-left))] sm:pr-4 sm:pl-[max(1rem,env(safe-area-inset-left))] lg:py-4 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))]'
+          : 'py-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pr-3 pl-[max(0.75rem,env(safe-area-inset-left))] sm:py-6 sm:pr-4 sm:pl-[max(1rem,env(safe-area-inset-left))] lg:py-8 lg:pb-0 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))]'
         }`}>
           <Outlet />
         </main>

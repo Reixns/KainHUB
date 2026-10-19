@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { DollarSign, ShoppingBag, Store, Users, Clock, MessageSquare, TrendingUp, AlertTriangle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Badge, Button, formatPeso, LogoMark, CARD_FOCUS_RING } from '@/components/UI';
+import SevenDayBarChart from '@/components/SevenDayBarChart';
 
 export default function AdminDashboard() {
   const { vendors, customers, orders, posts } = useApp();
@@ -30,7 +31,6 @@ export default function AdminDashboard() {
       count: dayOrders.length,
     });
   }
-  const maxRev = Math.max(1, ...days.map((d) => d.revenue));
 
   const stats = [
     { label: 'Total Revenue', value: formatPeso(totalRevenue), icon: DollarSign, color: 'bg-cat-green', to: '/admin/analytics' },
@@ -66,7 +66,7 @@ export default function AdminDashboard() {
               <div className={`w-10 h-10 ${s.color} rounded-lg flex items-center justify-center text-white mb-2`}>
                 <s.icon className="w-5 h-5" />
               </div>
-              <div className="text-2xl font-bold text-ink">{s.value}</div>
+              <div className="text-xl sm:text-2xl font-bold text-ink tabular-nums break-words">{s.value}</div>
               <div className="text-xs text-muted">{s.label}</div>
             </Card>
           </Link>
@@ -78,19 +78,7 @@ export default function AdminDashboard() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-ink flex items-center gap-2"><TrendingUp className="w-5 h-5 text-brand-strong" /> Revenue (Last 7 Days)</h2>
           </div>
-          <div className="flex items-end justify-between gap-2 h-48">
-            {days.map((d, i) => (
-              <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                <div className="text-xs text-muted font-medium">{formatPeso(d.revenue)}</div>
-                <div
-                  className="w-full bg-cat-blue-deep rounded-t-md"
-                  style={{ height: `${(d.revenue / maxRev) * 100}%`, minHeight: d.revenue > 0 ? '12px' : '3px' }}
-                ></div>
-                <div className="text-xs text-muted">{d.label}</div>
-                <div className="text-xs font-medium text-body">{d.count} orders</div>
-              </div>
-            ))}
-          </div>
+          <SevenDayBarChart days={days} valueKey="revenue" countKey="count" barClassName="bg-cat-blue-deep" />
         </Card>
 
         <Card className="p-4">

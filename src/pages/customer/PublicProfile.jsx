@@ -70,7 +70,7 @@ function VendorPublicProfile({ vendor, role }) {
             <span className="text-xs font-medium text-success bg-success-soft px-2 py-1 rounded-full">VERIFIED VENDOR</span>
           </div>
           <div className="flex items-center gap-3 text-sm text-body mt-3 flex-wrap">
-            <span className="flex items-center gap-1"><Star className="w-4 h-4 text-rating fill-rating" /> {vendor.rating.toFixed(1)}</span>
+            <span className="flex items-center gap-1"><Star className="w-4 h-4 text-rating fill-rating" /> {Number(vendor.rating || 0).toFixed(1)}</span>
             <span className="flex items-center gap-1"><Store className="w-4 h-4" /> {vendor.category}</span>
             <span className="flex items-center gap-1"><MapPin className="w-4 h-4" /> {vendor.address}</span>
           </div>

@@ -17,6 +17,7 @@ import {
 import { useApp } from '@/context/AppContext';
 import { Button, Input, PlatformLogo, Textarea } from '@/components/UI';
 import { validatePassword } from '@/lib/supabase';
+import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import FoodCategoryField from '@/components/FoodCategoryField';
 import PasswordRequirements from '@/components/PasswordRequirements';
 
@@ -52,7 +53,8 @@ export default function VendorRegister() {
     const emailParts = emailValue.split('@');
     if (!form.ownerName.trim()) errs.ownerName = 'Required';
     if (!form.shopName.trim()) errs.shopName = 'Required';
-    if (!form.mobile.trim()) errs.mobile = 'Required';
+    if (!form.mobile) errs.mobile = 'Required';
+    else if (!isValidMobile(form.mobile)) errs.mobile = mobileValidationMessage();
     if (!emailValue || emailParts.length !== 2 || !emailParts.every((part) => part.trim().length > 0)) {
       errs.email = 'Email required';
     }
@@ -139,7 +141,7 @@ export default function VendorRegister() {
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Input label="Shop name" icon={Store} value={form.shopName} onChange={updateField('shopName')} error={errors.shopName} autoComplete="organization" required className="register-input lg:!py-2" />
                   <Input label="Owner name" icon={User} value={form.ownerName} onChange={updateField('ownerName')} error={errors.ownerName} autoComplete="name" required className="register-input lg:!py-2" />
-                  <Input label="Mobile number" icon={Phone} type="tel" value={form.mobile} onChange={updateField('mobile')} error={errors.mobile} autoComplete="tel" required className="register-input lg:!py-2" />
+                  <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm((current) => ({ ...current, mobile: sanitizeMobile(e.target.value) }))} error={errors.mobile} autoComplete="tel" required className="register-input lg:!py-2" />
                   <Input label="Email address" icon={Mail} type="email" value={form.email} onChange={updateField('email')} error={errors.email} autoComplete="email" required className="register-input lg:!py-2" />
                   <Input label="Shop address (Zone 1)" icon={MapPin} value={form.shopAddress} onChange={updateField('shopAddress')} error={errors.shopAddress} autoComplete="street-address" required className="register-input sm:col-span-2 lg:!py-2" />
                   <FoodCategoryField value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} error={errors.category} />

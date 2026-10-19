@@ -2,7 +2,7 @@ import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Monitor, ClipboardList, Utensils, Package, MessageSquare, BarChart3, Settings, User, LogOut, Store, Menu, X, Bell, Ban, Clock } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Toasts, Avatar, isEmojiSource, PlatformLogo } from '@/components/UI';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 // A shop logo is either an emoji or an uploaded image reference. Distinguishing
 // them stops a stored image URL from rendering as literal text in the sidebar.
@@ -16,6 +16,21 @@ export default function VendorLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
   ));
+
+  // See AdminLayout: the one-time viewport sample goes stale on rotation/resize,
+  // leaving the drawer open as an overlay or hidden when it should be docked.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mql = window.matchMedia('(min-width: 1024px)');
+    const onChange = (event) => setSidebarOpen(event.matches);
+    // Safari < 14 and older WebViews only expose the deprecated listener API.
+    if (mql.addEventListener) {
+      mql.addEventListener('change', onChange);
+      return () => mql.removeEventListener('change', onChange);
+    }
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }, []);
 
   const pendingOrders = orders.filter((o) => (
     (String(o.vendorId) === String(auth.user?.id) || String(o.vendorId) === String(auth.user?.ownerId))
@@ -227,7 +242,7 @@ export default function VendorLayout() {
             is what a header is for, whereas `top: env(...)` would leave the content
             scrolling through the gap behind it. h-14 became min-h-14 so the inset
             cannot squeeze the bar's controls back under the 44px floor. */}
-        <header className="sticky top-0 z-50 min-h-14 pt-[env(safe-area-inset-top)] border-b border-white/10 bg-[#101014]/95 flex items-center px-4 lg:px-8 gap-3 backdrop-blur-sm">
+        <header className="sticky top-0 z-50 min-h-14 pt-[env(safe-area-inset-top)] border-b border-white/10 bg-[#101014]/95 flex items-center pr-4 pl-[max(1rem,env(safe-area-inset-left))] lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))] gap-3 backdrop-blur-sm">
           <button type="button" aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-controls="vendor-navigation" aria-expanded={sidebarOpen} className="tap-target rounded-xl text-white/70 transition-colors hover:bg-white/10 hover:text-white" onClick={() => setSidebarOpen((open) => !open)}>
             <Menu className="w-5 h-5 text-body" />
           </button>
@@ -248,7 +263,7 @@ export default function VendorLayout() {
             lg the sidebar is off-screen, so main is full-width -- and in landscape
             on a notched phone that puts the first column under the left cut out.
             `max()` preserves the 12px gutter wherever the inset is 0. */}
-        <main className="w-full min-w-0 p-3 sm:p-5 lg:p-8 max-w-7xl mx-auto page-enter pl-[max(0.75rem,env(safe-area-inset-left))]">
+        <main className="w-full min-w-0 py-3 pr-3 pl-[max(0.75rem,env(safe-area-inset-left))] sm:py-5 sm:pr-5 sm:pl-[max(1.25rem,env(safe-area-inset-left))] lg:py-8 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))] max-w-7xl mx-auto page-enter">
           <Outlet />
         </main>
       </div>

@@ -130,4 +130,22 @@ export function getSupabaseClient(role = 'customer') {
 
 export { isAuthCredentialError };
 
+/*
+  A throwaway client for a one-off credential check, such as verifying that a new
+  password differs from the current one. It persists no session and has no auth
+  listeners, so a probe sign-in cannot replace or disturb the real role session
+  (which would otherwise fire SIGNED_IN and tear down an in-progress recovery).
+*/
+export function getProbeClient() {
+  if (!isSupabaseConfigured) return null;
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      flowType: 'pkce',
+    },
+  });
+}
+
 export const supabase = getSupabaseClient('customer');

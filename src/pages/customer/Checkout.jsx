@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Phone, User, Truck, Package, CreditCard, Banknote, AlertTriangle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, Textarea, formatPeso, LogoMark, EmptyState } from '@/components/UI';
+import { sanitizeMobile, isValidMobile, mobileValidationMessage, MOBILE_LENGTH } from '@/lib/mobile';
 
 export default function CustomerCheckout() {
   const { auth, cart, vendors, placeOrder, sendChatOrderReceipt, clearCart, platformSettings, showToast } = useApp();
@@ -114,8 +115,12 @@ export default function CustomerCheckout() {
       showToast('Please enter your name.', 'error');
       return;
     }
-    if (!mobile.trim()) {
+    if (!mobile) {
       showToast('Please enter your mobile number.', 'error');
+      return;
+    }
+    if (!isValidMobile(mobile)) {
+      showToast(mobileValidationMessage(), 'error');
       return;
     }
     if (fulfillment === 'DELIVERY' && !address.trim()) {
@@ -192,7 +197,7 @@ export default function CustomerCheckout() {
         <div className="space-y-4">
           <CheckoutStep step={1} title="Your details">
             <Input label="Name" icon={User} value={name} onChange={(e) => setName(e.target.value)} />
-            <Input label="Mobile number" icon={Phone} value={mobile} onChange={(e) => setMobile(e.target.value)} />
+            <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={mobile} onChange={(e) => setMobile(sanitizeMobile(e.target.value))} />
             {fulfillment === 'DELIVERY' && (
               <Input label="Delivery address" icon={MapPin} value={address} onChange={(e) => setAddress(e.target.value)} />
             )}

@@ -15,12 +15,12 @@ export default function AdminOrders() {
 
   const filtered = useMemo(() => {
     return orders
-      .filter((o) => vendorFilter === 'all' || o.vendorId === Number(vendorFilter))
+      .filter((o) => vendorFilter === 'all' || String(o.vendorId) === String(vendorFilter))
       .filter((o) => statusFilter === 'all' || o.status === statusFilter)
       .filter((o) => fulfillmentFilter === 'all' || o.fulfillment === fulfillmentFilter)
       .filter((o) =>
         !search ||
-        o.id.toLowerCase().includes(search.toLowerCase()) ||
+        String(o.id).toLowerCase().includes(search.toLowerCase()) ||
         (o.customerName || '').toLowerCase().includes(search.toLowerCase()) ||
         (o.vendorName || '').toLowerCase().includes(search.toLowerCase())
       )
@@ -68,7 +68,7 @@ export default function AdminOrders() {
 
       <Card className="mt-4 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[860px] text-sm">
             <thead className="bg-surface-sunken text-left text-xs uppercase text-muted">
               <tr>
                 <th className="px-3 py-2">Order ID</th>

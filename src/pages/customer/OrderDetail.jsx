@@ -113,8 +113,8 @@ export default function CustomerOrderDetail() {
           <Card className="p-4">
             <h2 className="font-semibold text-ink mb-4">History</h2>
             <ol className="space-y-0">
-              {order.timeline.map((t, i) => {
-                const isLast = i === order.timeline.length - 1;
+              {(order.timeline || []).map((t, i) => {
+                const isLast = i === (order.timeline || []).length - 1;
                 return (
                   <li key={i} className="flex gap-3">
                     {/* Connector line between markers, so the list reads as one

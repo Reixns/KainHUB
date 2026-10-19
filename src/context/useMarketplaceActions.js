@@ -1,8 +1,13 @@
-﻿import { useCallback } from 'react';
+import { useCallback } from 'react';
 import { nextLocalId } from './persistence';
+import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
 
 export function useMarketplaceActions({ setPosts, auth, showToast }) {
   const addPost = useCallback((post) => {
+    if (countWords(post?.content) > WORD_LIMIT) {
+      showToast(wordLimitMessage(), 'error');
+      return null;
+    }
     const newPost = {
       // Was `Date.now() + Math.random()`. posts.legacy_id is `bigint`, and a
       // fractional value is rejected by Postgres on write (and round-trips
@@ -11,7 +16,7 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
       authorId: auth.user.id,
       authorRole: auth.role,
       authorName: auth.role === 'vendor' ? auth.user.name : auth.user.fullName,
-      authorAvatar: auth.role === 'vendor' ? auth.user.logo : 'dY',
+      authorAvatar: auth.role === 'vendor' ? auth.user.logo : (auth.user.avatar || ''),
       vendorId: auth.role === 'vendor' ? auth.user.id : null,
       verified: auth.role === 'vendor' || auth.role === 'admin',
       ...post,
@@ -40,8 +45,12 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
 
   const addComment = useCallback((postId, content) => {
     if (!auth.user || !content.trim()) return;
+    if (countWords(content) > WORD_LIMIT) {
+      showToast(wordLimitMessage(), 'error');
+      return;
+    }
     const name = auth.role === 'vendor' ? auth.user.name : auth.user.fullName;
-    const avatar = auth.role === 'vendor' ? auth.user.logo : 'dY';
+    const avatar = auth.role === 'vendor' ? auth.user.logo : (auth.user.avatar || '');
     setPosts((list) => list.map((p) => {
       if (p.id !== postId) return p;
       const newComment = {
@@ -56,7 +65,7 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
       };
       return { ...p, comments: [...p.comments, newComment] };
     }));
-  }, [setPosts, auth]);
+  }, [setPosts, auth, showToast]);
 
   const deleteComment = useCallback((postId, commentId) => {
     if (!auth.user) return;

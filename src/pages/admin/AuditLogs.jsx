@@ -58,7 +58,7 @@ export default function AdminAuditLogs() {
       <p className="text-sm text-muted mb-4">System-wide activity and order events.</p>
       <Card className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-surface-sunken text-left text-xs uppercase text-muted">
               <tr>
                 <th className="px-3 py-2">Timestamp</th>

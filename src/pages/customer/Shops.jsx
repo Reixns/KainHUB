@@ -350,7 +350,7 @@ function RatedShopCard({ shop }) {
           <span className="truncate text-[11px] font-medium text-white/80">{shop.category || 'Local kitchen'}</span>
           <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-bold text-white">
             <Star className="h-3 w-3 fill-amber-300 text-amber-300" aria-hidden="true" />
-            {Number(shop.rating).toFixed(1)}
+            {Number(shop.rating || 0).toFixed(1)}
           </span>
         </div>
       </div>

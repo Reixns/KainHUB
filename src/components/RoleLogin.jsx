@@ -55,11 +55,12 @@ const formatClock = (seconds) =>
 // Shared by the customer, vendor, and admin login pages. Each portal supplies
 // only its own branding, copy, and post-login redirect via `config`.
 //
-// The lockout is deliberately client-side and documented as such: the streak
-// lives in localStorage (src/lib/loginLockout.js) so a reload cannot wipe it,
-// and every further tier of consecutive wrong passwords adds five minutes.
-// Real rate limiting still has to be enforced by Supabase Auth or an edge
-// function.
+// Two layers guard the sign-in form. The database (login_attempts table plus the
+// login_status / record_failed_login RPCs) is authoritative: three wrong
+// passwords lock the profile until it is reset through the email link. The
+// localStorage streak in src/lib/loginLockout.js remains as a client-side
+// fallback for a deployment whose schema has not been migrated yet, and as a
+// reload-resistant throttle on top.
 export default function RoleLogin({ config }) {
   const {
     role,
@@ -91,16 +92,19 @@ export default function RoleLogin({ config }) {
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [lockUntil, setLockUntil] = useState(0);
   const [lockRemaining, setLockRemaining] = useState(0);
+  const [accountLocked, setAccountLocked] = useState(false);
 
   /*
     Re-read the stored streak whenever the account being typed changes, which is
     what makes the lockout survive a reload: on mount it comes back from
-    localStorage instead of starting again at zero.
+    localStorage instead of starting again at zero. The server-side lock flag is
+    cleared here too, so switching to a different email starts fresh.
   */
   useEffect(() => {
     const stored = readLockout(role, email);
     setFailedAttempts(stored.fails);
     setLockUntil(stored.lockUntil);
+    setAccountLocked(false);
   }, [email, role]);
 
   // Counts the lock down from wall-clock time, so it cannot drift or be reset by
@@ -178,9 +182,33 @@ export default function RoleLogin({ config }) {
         clearLockout(role, email);
         setFailedAttempts(0);
         setLockUntil(0);
+        setAccountLocked(false);
         navigate(location.state?.from || redirectTo, { replace: true });
+      } else if (result.locked) {
+        // The database refused the sign-in outright. A permanent lock has no
+        // timer -- the only way back in is the email recovery link -- while a
+        // tier lock is shown with the same countdown as the local one.
+        if (result.permanent) {
+          setAccountLocked(true);
+          setError(result.message || 'This account is locked. Reset your password by email to unlock it.');
+        } else {
+          const seconds = Math.max(0, Number(result.secondsRemaining) || 0);
+          setAccountLocked(false);
+          setFailedAttempts(Number(result.failedAttempts) || 0);
+          setLockUntil(Date.now() + seconds * 1000);
+          setError('');
+        }
+        notifyFailedLogin(email, role);
+        resetCaptcha();
       } else if (!result.countAttempt) {
         setError(`${result.message || 'Unable to sign in.'} This did not count as a failed password attempt.`);
+        resetCaptcha();
+      } else if (typeof result.failedAttempts === 'number') {
+        // Database-authoritative streak and tiers: the server already decided
+        // there is no lock this time, so only the counter needs reflecting.
+        setFailedAttempts(result.failedAttempts);
+        const remaining = Number(result.attemptsRemaining) || 0;
+        setError(`${result.message || 'Invalid email or password.'} ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`);
         resetCaptcha();
       } else {
         const attempt = registerFailedAttempt(role, email);
@@ -213,7 +241,7 @@ export default function RoleLogin({ config }) {
   const strikes = lockRemaining > 0
     ? MAX_LOGIN_ATTEMPTS
     : failedAttempts % MAX_LOGIN_ATTEMPTS;
-  const locked = lockRemaining > 0;
+  const locked = lockRemaining > 0 || accountLocked;
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#101014] text-white">
@@ -452,7 +480,20 @@ export default function RoleLogin({ config }) {
                     className="flex items-start gap-2 rounded-control border border-violet-300/20 bg-violet-400/10 px-3 py-2 text-sm font-medium text-violet-200"
                   >
                     <Lock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                    <span>Login locked. Try again in {formatClock(lockRemaining)}.</span>
+                    <span>
+                      {accountLocked
+                        ? 'Account locked after too many failed attempts. Reset your password by email — that same link unlocks the account.'
+                        : `Login locked. Try again in ${formatClock(lockRemaining)}.`}
+                    </span>
+                    {accountLocked && (
+                      <Link
+                        to={`/forgot-password?role=${role}`}
+                        state={{ email }}
+                        className="ml-auto shrink-0 rounded-control border border-violet-300/30 px-2.5 py-1 text-xs font-semibold text-violet-200 transition-colors hover:bg-violet-400/15 hover:text-white"
+                      >
+                        Recover account
+                      </Link>
+                    )}
                   </div>
                 )}
 

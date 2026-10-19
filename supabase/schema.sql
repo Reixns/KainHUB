@@ -186,6 +186,35 @@ create table if not exists public.admin_profiles (
   updated_at timestamptz not null default now()
 );
 
+-- Failed-login state lives in its own table rather than on `profiles`.
+--
+-- Why: every signed-in user can update their own `profiles` row through RLS, so
+-- a counter or lock flag stored there could be cleared by the client itself and
+-- the lock would mean nothing. This table has RLS enabled with no policies and
+-- no grants to anon/authenticated, so only the SECURITY DEFINER functions
+-- (login_status / record_failed_login / clear_login_attempts / unlock_account)
+-- can read or change it.
+--
+-- The lock escalates in tiers of three wrong passwords: the first three wait
+-- five minutes, the next three wait ten, and the ninth is a permanent lock that
+-- only an email-confirmed password reset clears. Timed locks leave the streak
+-- intact (failed_attempts keeps climbing), so the next tier cannot be dodged by
+-- waiting out a lock.
+create table if not exists public.login_attempts (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  email text,
+  failed_attempts integer not null default 0,
+  lock_tier integer not null default 0,
+  locked_until timestamptz,
+  locked_at timestamptz,
+  lock_reason text,
+  last_failed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.login_attempts enable row level security;
+revoke all on public.login_attempts from public, anon, authenticated;
+
 -- CATALOG ---------------------------------------------------------------------
 
 create table if not exists public.vendors (
@@ -302,6 +331,85 @@ create table if not exists public.posts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- One definition of a "word" for the 100-word limits enforced on posts,
+-- comments and chat messages. Counts whitespace-separated runs, so a blank
+-- string is 0 rather than 1 and trailing/leading spaces do not count.
+--
+-- Trims every kind of whitespace, not just spaces: btrim() with no second
+-- argument only strips spaces, so a message padded with tabs or newlines was
+-- split on its edges and counted extra empty words that the browser's
+-- String.trim() never produces. Both sides now count the same words.
+create or replace function public.count_words(value text)
+returns integer
+language sql
+immutable
+set search_path = public, pg_temp
+as $$
+  with trimmed as (
+    select regexp_replace(coalesce(value, ''), '^[[:space:]]+|[[:space:]]+$', '', 'g') as text
+  )
+  select case
+    when trimmed.text = '' then 0
+    else array_length(regexp_split_to_array(trimmed.text, '[[:space:]]+'), 1)
+  end
+  from trimmed;
+$$;
+
+/*
+  Enforce the word limit at the database, not only in the browser: the app talks
+  to Supabase directly with the anon key, so a client-side check is advisory.
+
+  Backwards compatible by design. Existing over-limit posts stay readable, and
+  only rows whose text actually changes are validated:
+    * INSERT validates content and every comment.
+    * UPDATE validates content only when it changed, and only comments that were
+      not already on the row (i.e. newly added ones). A like, a pin, or a new
+      comment on a legacy long post therefore still succeeds.
+*/
+create or replace function public.enforce_post_word_limit()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  comment_item jsonb;
+  old_comment_ids jsonb := '[]'::jsonb;
+begin
+  if tg_op = 'INSERT' then
+    if public.count_words(new.content) > 100 then
+      raise exception 'Posts are limited to 100 words' using errcode = '22001';
+    end if;
+  elsif new.content is distinct from old.content then
+    if public.count_words(new.content) > 100 then
+      raise exception 'Posts are limited to 100 words' using errcode = '22001';
+    end if;
+  end if;
+
+  if jsonb_typeof(new.comments) = 'array' then
+    if tg_op = 'UPDATE' and jsonb_typeof(old.comments) = 'array' then
+      select coalesce(jsonb_agg(entry ->> 'id'), '[]'::jsonb)
+        into old_comment_ids
+        from jsonb_array_elements(old.comments) entry;
+    end if;
+
+    for comment_item in select * from jsonb_array_elements(new.comments) loop
+      if not old_comment_ids ? coalesce(comment_item ->> 'id', '') then
+        if public.count_words(comment_item ->> 'content') > 100 then
+          raise exception 'Comments are limited to 100 words' using errcode = '22001';
+        end if;
+      end if;
+    end loop;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists posts_enforce_word_limit on public.posts;
+create trigger posts_enforce_word_limit
+  before insert or update of content, comments on public.posts
+  for each row execute function public.enforce_post_word_limit();
 
 -- A favourite has no surrogate key on purpose: the row is the triple
 -- (owner, kind, target) and nothing else. The browser keeps the same shape with
@@ -502,7 +610,8 @@ insert into public._canonical_columns (tbl, col, typ) values
   ('menu_items',    'vendor_id',   'bigint'),
   ('menu_items',    'legacy_id',   'bigint'),
   ('menu_items',    'name',        'text'),
-  ('menu_items',    'description', 'text'),
+    ('menu_items',    'description', 'text'),
+    ('menu_items',    'category',    'text'),
   ('menu_items',    'price',       'numeric(10,2)'),
   ('menu_items',    'stock',       'integer'),
   ('menu_items',    'available',   'boolean'),
@@ -603,7 +712,18 @@ insert into public._canonical_columns (tbl, col, typ) values
   ('activity_logs', 'entity_type', 'text'),
   ('activity_logs', 'entity_id',   'text'),
   ('activity_logs', 'details',     'jsonb'),
-  ('activity_logs', 'created_at',  'timestamp with time zone')
+  ('activity_logs', 'created_at',  'timestamp with time zone'),
+  -- login_attempts: tiered failed-sign-in lock state. Listed here so a database
+  -- that ran an earlier version of this script picks up lock_tier / locked_until.
+  ('login_attempts', 'user_id',         'uuid'),
+  ('login_attempts', 'email',           'text'),
+  ('login_attempts', 'failed_attempts', 'integer'),
+  ('login_attempts', 'lock_tier',       'integer'),
+  ('login_attempts', 'locked_until',    'timestamp with time zone'),
+  ('login_attempts', 'locked_at',       'timestamp with time zone'),
+  ('login_attempts', 'lock_reason',     'text'),
+  ('login_attempts', 'last_failed_at',  'timestamp with time zone'),
+  ('login_attempts', 'updated_at',      'timestamp with time zone')
 on conflict (tbl, col) do update
 set typ = excluded.typ;
 
@@ -1269,6 +1389,228 @@ begin
 end;
 $$;
 
+-- LOGIN LOCKOUT ----------------------------------------------------------------
+-- Failed sign-in escalates in tiers of three wrong passwords: tier 1 waits five
+-- minutes, tier 2 waits ten, and the third tier is a permanent lock. A timed
+-- lock is cleared when it expires; only a successful sign-in or an
+-- email-confirmed password reset (unlock_account) clears the streak itself.
+
+-- Returns the lock state for an email. Anon-callable because a failed sign-in
+-- happens before a session exists. Unknown emails deliberately return the same
+-- "not locked, 0 attempts" shape as a clean account, so the RPC cannot be used
+-- to enumerate registered addresses.
+create or replace function public.login_status(p_email text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  result jsonb;
+begin
+  select jsonb_build_object(
+    'failedAttempts', coalesce(la.failed_attempts, 0),
+    'tier', coalesce(la.lock_tier, 0),
+    'locked', (la.locked_at is not null)
+              or (la.locked_until is not null and la.locked_until > now()),
+    'permanent', (la.locked_at is not null),
+    'lockedUntil', la.locked_until,
+    'lockedAt', la.locked_at,
+    'reason', la.lock_reason,
+    'secondsRemaining', case
+      when la.locked_until is not null and la.locked_until > now()
+        then ceil(extract(epoch from (la.locked_until - now())))::int
+      else 0
+    end
+  )
+  into result
+  from public.profiles p
+  left join public.login_attempts la on la.user_id = p.id
+  where lower(btrim(p.email)) = lower(btrim(p_email))
+  limit 1;
+
+  return coalesce(result, jsonb_build_object(
+    'failedAttempts', 0, 'tier', 0, 'locked', false, 'permanent', false,
+    'lockedUntil', null, 'lockedAt', null, 'reason', null, 'secondsRemaining', 0));
+end;
+$$;
+
+revoke all on function public.login_status(text) from public;
+grant execute on function public.login_status(text) to anon, authenticated;
+
+-- Counts one wrong password and applies the tiered lock. Returns the new state so
+-- the login screen can show "attempts remaining", a countdown, or the "reset by
+-- email to unlock" message. A call that arrives while a lock is already active is
+-- answered with the remaining time without moving the counter, so the timer
+-- cannot be reset by hammering the form.
+create or replace function public.record_failed_login(p_email text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  attempts_per_tier constant integer := 3;
+  step_seconds      constant integer := 300;  -- tier 1 = 5 min, tier 2 = 10 min
+  max_attempts      constant integer := 9;    -- the third tier is permanent
+  target_id uuid;
+  cur_attempts integer;
+  cur_tier integer;
+  cur_until timestamptz;
+  cur_locked_at timestamptz;
+  next_attempts integer;
+  next_tier integer;
+  next_until timestamptz;
+  next_locked_at timestamptz;
+  next_reason text;
+begin
+  select id into target_id
+  from public.profiles
+  where lower(btrim(email)) = lower(btrim(p_email))
+  limit 1;
+
+  if target_id is null then
+    return jsonb_build_object('failedAttempts', 0, 'tier', 0, 'locked', false,
+      'permanent', false, 'lockedUntil', null, 'lockedAt', null, 'reason', null,
+      'secondsRemaining', 0);
+  end if;
+
+  insert into public.login_attempts (user_id, email)
+  values (target_id, lower(btrim(p_email)))
+  on conflict (user_id) do nothing;
+
+  select failed_attempts, lock_tier, locked_until, locked_at
+    into cur_attempts, cur_tier, cur_until, cur_locked_at
+    from public.login_attempts
+    where user_id = target_id
+    for update;
+
+  -- Already permanently locked: report it and leave the row alone.
+  if cur_locked_at is not null then
+    return jsonb_build_object(
+      'failedAttempts', cur_attempts, 'tier', cur_tier, 'locked', true,
+      'permanent', true, 'lockedUntil', null, 'lockedAt', cur_locked_at,
+      'reason', (select lock_reason from public.login_attempts where user_id = target_id),
+      'secondsRemaining', 0);
+  end if;
+
+  -- Still inside a timed lock: report the time left, do not move the counter.
+  if cur_until is not null and cur_until > now() then
+    return jsonb_build_object(
+      'failedAttempts', cur_attempts, 'tier', cur_tier, 'locked', true,
+      'permanent', false, 'lockedUntil', cur_until, 'lockedAt', null,
+      'reason', (select lock_reason from public.login_attempts where user_id = target_id),
+      'secondsRemaining', ceil(extract(epoch from (cur_until - now())))::int);
+  end if;
+
+  -- Capped so a leaked counter can never grow without bound.
+  next_attempts := least(cur_attempts + 1, max_attempts);
+
+  if next_attempts % attempts_per_tier = 0 then
+    next_tier := next_attempts / attempts_per_tier;  -- 1, 2, then 3
+    if next_tier >= 3 then
+      next_locked_at := now();
+      next_until := null;
+      next_reason := 'Account locked after too many failed login attempts';
+    else
+      next_locked_at := null;
+      next_until := now() + make_interval(secs => next_tier * step_seconds);
+      next_reason := 'Too many failed login attempts';
+    end if;
+  else
+    next_tier := cur_tier;
+    next_until := cur_until;  -- may be an expired value; harmless
+    next_locked_at := null;
+    next_reason := (select lock_reason from public.login_attempts where user_id = target_id);
+  end if;
+
+  update public.login_attempts
+  set failed_attempts = next_attempts,
+      lock_tier = next_tier,
+      locked_until = next_until,
+      locked_at = next_locked_at,
+      lock_reason = next_reason,
+      last_failed_at = now(),
+      updated_at = now()
+  where user_id = target_id;
+
+  return jsonb_build_object(
+    'failedAttempts', next_attempts,
+    'tier', next_tier,
+    'locked', (next_locked_at is not null) or (next_until is not null and next_until > now()),
+    'permanent', (next_locked_at is not null),
+    'lockedUntil', next_until,
+    'lockedAt', next_locked_at,
+    'reason', next_reason,
+    'secondsRemaining', case
+      when next_until is not null and next_until > now()
+        then ceil(extract(epoch from (next_until - now())))::int
+      else 0
+    end);
+end;
+$$;
+
+revoke all on function public.record_failed_login(text) from public;
+grant execute on function public.record_failed_login(text) to anon, authenticated;
+
+-- Clears the streak after a successful sign-in. The caller may only clear their
+-- own row; an admin may clear anyone's.
+create or replace function public.clear_login_attempts(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication is required' using errcode = '42501';
+  end if;
+  if auth.uid() <> p_user_id and not public.is_admin() then
+    raise exception 'You may only clear your own login attempts' using errcode = '42501';
+  end if;
+
+  update public.login_attempts
+  set failed_attempts = 0,
+      lock_tier = 0,
+      locked_until = null,
+      locked_at = null,
+      lock_reason = null,
+      updated_at = now()
+  where user_id = p_user_id;
+end;
+$$;
+
+revoke all on function public.clear_login_attempts(uuid) from public;
+grant execute on function public.clear_login_attempts(uuid) to authenticated;
+
+-- Unlocks the caller after an email-confirmed password reset. The recovery
+-- session (auth.uid()) is the proof that the mailbox was accessed; without it
+-- there is nothing to unlock and the call is refused.
+create or replace function public.unlock_account()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'A verified email session is required to unlock the account' using errcode = '42501';
+  end if;
+
+  update public.login_attempts
+  set failed_attempts = 0,
+      lock_tier = 0,
+      locked_until = null,
+      locked_at = null,
+      lock_reason = null,
+      updated_at = now()
+  where user_id = auth.uid();
+end;
+$$;
+
+revoke all on function public.unlock_account() from public;
+grant execute on function public.unlock_account() to authenticated;
+
 create or replace function public.set_order_updated_at()
 returns trigger
 language plpgsql
@@ -1455,6 +1797,13 @@ begin
      or jsonb_typeof(p_message) <> 'object'
      or nullif(p_message ->> 'id', '') is null then
     raise exception 'Invalid chat message' using errcode = '22023';
+  end if;
+
+  -- Same 100-word ceiling as posts/comments. Image-only messages have no text
+  -- and count as 0 words. Existing messages are never re-validated, so old
+  -- conversations keep loading and only new sends are limited.
+  if public.count_words(p_message ->> 'text') > 100 then
+    raise exception 'Chat messages are limited to 100 words' using errcode = '22001';
   end if;
 
   if sender_role = 'customer' then
@@ -2302,9 +2651,13 @@ with expected as (
     e.tbl,
     e.col,
     e.typ,
-    regexp_replace(e.typ, '\s+generated by default as identity$', '') as base_typ,
+    regexp_replace(
+      regexp_replace(e.typ, '\s+generated by default as identity$', ''),
+      '^public\.', ''
+    )                                                          as base_typ,
     case when a.attname is null then '(absent)'
-         else format_type(a.atttypid, a.atttypmod) end            as actual_type
+         else regexp_replace(format_type(a.atttypid, a.atttypmod), '^public\.', '') end
+                                                               as actual_type
   from public._canonical_columns e
   left join pg_namespace n on n.nspname = 'public'
   left join pg_class c on c.relnamespace = n.oid and c.relname = e.tbl
@@ -2338,8 +2691,11 @@ begin
     left join pg_class c on c.relnamespace = n.oid and c.relname = e.tbl
     left join pg_attribute a on a.attrelid = c.oid and a.attname = e.col
     where a.attname is null
-       or format_type(a.atttypid, a.atttypmod)
-          <> regexp_replace(e.typ, '\s+generated by default as identity$', '')
+       or regexp_replace(format_type(a.atttypid, a.atttypmod), '^public\.', '')
+          <> regexp_replace(
+               regexp_replace(e.typ, '\s+generated by default as identity$', ''),
+               '^public\.', ''
+             )
   loop
     raise warning '%.% is not as expected (wanted %)', bad.tbl, bad.col, bad.typ;
   end loop;

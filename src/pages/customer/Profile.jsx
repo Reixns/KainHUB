@@ -3,13 +3,14 @@ import { User, Mail, Phone, MapPin, Save, ShoppingBag, Heart, LogOut, ChevronRig
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, Avatar, Badge, CARD_FOCUS_RING } from '@/components/UI';
 import { InfoRow } from '@/components/ProfileParts';
+import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import { Link, useNavigate } from 'react-router-dom';
 
 export default function CustomerProfile() {
   // `uploadMediaFile`, `showToast`, `uploading` and `setUploading` went out with
   // the cover strip -- a customer has no image control on this page at all, the
   // avatar is initials-only by design.
-  const { auth, updateProfile, orders, posts, logout } = useApp();
+  const { auth, updateProfile, orders, posts, logout, showToast } = useApp();
   const navigate = useNavigate();
   const user = auth.user;
   const [editing, setEditing] = useState(false);
@@ -36,6 +37,10 @@ export default function CustomerProfile() {
   }, [user.fullName, user.mobile, user.email, user.address]);
 
   const handleSave = async () => {
+    if (!isValidMobile(form.mobile)) {
+      showToast(mobileValidationMessage(), 'error');
+      return;
+    }
     const result = await updateProfile(form);
     if (result?.success !== false) setEditing(false);
   };
@@ -95,7 +100,7 @@ export default function CustomerProfile() {
         {editing ? (
           <div className="space-y-3">
             <Input label="Full Name" icon={User} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
-            <Input label="Mobile" icon={Phone} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+            <Input label="Mobile" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: sanitizeMobile(e.target.value) })} />
             <Input label="Email" icon={Mail} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
             <div className="flex gap-2">

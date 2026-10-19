@@ -90,7 +90,7 @@ export default function AdminVendors() {
                           v.status === 'approved' ? 'green' :
                           v.status === 'pending' ? 'yellow' :
                           v.status === 'suspended' ? 'red' : 'gray'
-                        }>{v.status.toUpperCase()}</Badge>
+                        }>{String(v.status || '').toUpperCase()}</Badge>
                       </div>
                       <div className="text-xs text-muted mt-0.5">{v.ownerName} · {v.category}</div>
                       <div className="text-xs text-muted">{v.email} · {vendorOrders.length} orders · {formatPeso(vendorSales)}</div>

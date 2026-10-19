@@ -1,6 +1,7 @@
 import { TrendingUp, DollarSign, ShoppingBag, X } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, formatPeso } from '@/components/UI';
+import SevenDayBarChart from '@/components/SevenDayBarChart';
 
 export default function VendorAnalytics() {
   const { auth, orders } = useApp();
@@ -41,7 +42,6 @@ export default function VendorAnalytics() {
       sales: daySales,
     });
   }
-  const maxSales = Math.max(1, ...days.map((d) => d.sales));
 
   // Popular items
   const itemCounts = {};
@@ -60,41 +60,37 @@ export default function VendorAnalytics() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card className="p-4">
           <div className="w-10 h-10 rounded-lg bg-success-soft text-success flex items-center justify-center mb-2"><DollarSign className="w-5 h-5" /></div>
-          <div className="text-2xl font-bold">{formatPeso(totalSales)}</div>
+          <div className="text-xl sm:text-2xl font-bold tabular-nums break-words">{formatPeso(totalSales)}</div>
           <div className="text-xs text-muted">Total Sales</div>
         </Card>
         <Card className="p-4">
           <div className="w-10 h-10 rounded-lg bg-cat-blue/10 text-brand-strong flex items-center justify-center mb-2"><ShoppingBag className="w-5 h-5" /></div>
-          <div className="text-2xl font-bold">{completed.length}</div>
+          <div className="text-xl sm:text-2xl font-bold tabular-nums">{completed.length}</div>
           <div className="text-xs text-muted">Completed Orders</div>
         </Card>
         <Card className="p-4">
           <div className="w-10 h-10 rounded-lg bg-brand-muted text-brand-strong flex items-center justify-center mb-2"><TrendingUp className="w-5 h-5" /></div>
-          <div className="text-2xl font-bold">{formattedAverage}</div>
+          <div className="text-xl sm:text-2xl font-bold tabular-nums break-words">{formattedAverage}</div>
           <div className="text-xs text-muted">Avg Order Value</div>
         </Card>
         <Card className="p-4">
           <div className="w-10 h-10 rounded-lg bg-danger-soft text-danger flex items-center justify-center mb-2"><X className="w-5 h-5" /></div>
-          <div className="text-2xl font-bold">{cancelled.length}</div>
+          <div className="text-xl sm:text-2xl font-bold tabular-nums">{cancelled.length}</div>
           <div className="text-xs text-muted">Cancelled/Rejected</div>
         </Card>
       </div>
 
       <Card className="p-4">
         <h2 className="font-semibold text-ink mb-4">Last 7 Days Sales</h2>
-        <div className="flex items-end justify-between gap-2 h-40">
-          {days.map((d, i) => (
-            <div key={i} className="flex-1 flex flex-col items-center gap-1">
-              <div className="text-xs text-muted">{formatPeso(d.sales)}</div>
-              <div
-                className="w-full bg-brand rounded-t-md transition-all"
-                style={{ height: `${(d.sales / maxSales) * 100}%`, minHeight: d.sales > 0 ? '8px' : '2px' }}
-              ></div>
-              <div className="text-xs text-muted">{d.label}</div>
-              <div className="text-xs font-medium text-body">{d.orders} orders</div>
-            </div>
-          ))}
-        </div>
+        <SevenDayBarChart
+          days={days}
+          valueKey="sales"
+          countKey="orders"
+          barClassName="bg-brand transition-all"
+          heightClass="h-40"
+          minBarHeight={8}
+          emptyBarHeight={2}
+        />
       </Card>
 
       <Card className="p-4">

@@ -6,6 +6,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
 import { Avatar, Button, Card, EmptyState, getProductImage, formatPeso, formatDateTime, formatQueue, StatusBadge, timeAgo, isImageSource, isEmojiSource, Modal } from '@/components/UI';
 import ShopRatingForm from '@/components/ShopRatingForm';
 import { ORDER_STATUSES_DELIVERY, ORDER_STATUSES_PICKUP } from '@/data/mockData';
+import { countWords, WORD_LIMIT } from '@/lib/textLimits';
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
@@ -71,6 +72,8 @@ export default function Chat() {
   const [pendingImage, setPendingImage] = useState(null);
   const [imageError, setImageError] = useState('');
   const [sendingImage, setSendingImage] = useState(false);
+  const draftWords = countWords(draft);
+  const draftOverLimit = draftWords > WORD_LIMIT;
   const [counterpartTyping, setCounterpartTyping] = useState(false);
   const [viewingImage, setViewingImage] = useState('');
   const messagesRef = useRef(null);
@@ -238,10 +241,15 @@ export default function Chat() {
     };
     markVisibleMessages();
     document.addEventListener('visibilitychange', markVisibleMessages);
-    desktopQuery.addEventListener('change', markVisibleMessages);
+    // Safari < 14 and older WebViews only expose the deprecated listener API.
+    const removeDesktopListener = desktopQuery.addEventListener
+      ? () => desktopQuery.removeEventListener('change', markVisibleMessages)
+      : () => desktopQuery.removeListener(markVisibleMessages);
+    if (desktopQuery.addEventListener) desktopQuery.addEventListener('change', markVisibleMessages);
+    else desktopQuery.addListener(markVisibleMessages);
     return () => {
       document.removeEventListener('visibilitychange', markVisibleMessages);
-      desktopQuery.removeEventListener('change', markVisibleMessages);
+      removeDesktopListener();
     };
   }, [activeChat, auth.role, markChatMessageRead, mobileShowConversations, mobileShowDetails]);
 
@@ -399,7 +407,7 @@ export default function Chat() {
     if (!activeChat || sendingImage) return;
     const target = { vendorId: activeChat.vendorId, customerId: activeChat.customerId };
     if (!pendingImage) {
-      if (!draft.trim()) return;
+      if (!draft.trim() || countWords(draft) > WORD_LIMIT) return;
       sendChatMessage({ ...target, text: draft, replyTo });
       publishTyping(false);
       setDraft('');
@@ -410,6 +418,10 @@ export default function Chat() {
 
     const file = pendingImage;
     const caption = draft;
+    if (countWords(caption) > WORD_LIMIT) {
+      setImageError(`Captions are limited to ${WORD_LIMIT} words. Please shorten it before sending.`);
+      return;
+    }
     setSendingImage(true);
     setImageError('');
     try {
@@ -1069,6 +1081,11 @@ export default function Chat() {
                   </div>
                 )}
                 {imageError && <p className="pb-2 text-xs text-danger">{imageError}</p>}
+                {draft && (
+                  <div className={`pb-1.5 pr-1 text-right text-[11px] ${draftOverLimit ? 'font-semibold text-danger' : isDarkChat ? 'text-white/45' : 'text-muted'}`}>
+                    {draftWords}/{WORD_LIMIT} words{draftOverLimit ? ' — over the limit' : ''}
+                  </div>
+                )}
                 <div className={`flex items-center gap-1.5 rounded-xl border p-1 transition focus-within:ring-2 ${isDarkChat ? 'border-white/10 bg-white/[0.05] focus-within:border-violet-400 focus-within:bg-white/[0.08] focus-within:ring-violet-400/20' : 'border-brand-line/70 bg-brand-soft/50 focus-within:border-brand focus-within:bg-white focus-within:ring-brand-muted'}`}>
                   <label
                     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors ${isDarkChat ? 'text-violet-300 hover:bg-white/10' : 'text-brand-strong hover:bg-brand-muted'} ${sendingImage ? 'pointer-events-none opacity-50' : 'cursor-pointer'}`}
@@ -1120,7 +1137,7 @@ export default function Chat() {
                     type="submit"
                     aria-label="Send message"
                     title="Send message"
-                    disabled={(!draft.trim() && !pendingImage) || sendingImage}
+                    disabled={(!draft.trim() && !pendingImage) || sendingImage || draftOverLimit}
                     loading={sendingImage}
                     className="h-10 w-10 shrink-0 rounded-xl border border-violet-300/20 bg-violet-600 p-0 text-white shadow-md shadow-violet-950/30 transition duration-150 hover:-translate-y-0.5 hover:bg-violet-500 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#19191f] active:translate-y-0 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none"
                   >

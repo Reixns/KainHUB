@@ -414,6 +414,47 @@ for customer, vendor, and admin changes; reads are restricted to admins.
 | `details` | `jsonb` | Safe changed-field and workflow metadata; excludes chat contents, profile details, and order contact data. |
 | `created_at` | `timestamp with time zone` | Event time; indexed newest-first for the audit screen. |
 
+### 4.13 `login_attempts` — Failed Sign-In Lock State
+
+**Used by:** The sign-in flow on every portal. Holds the consecutive
+wrong-password count and the tiered lock state for an account. Failures
+escalate in tiers of three: the first three lock for five minutes, the next
+three for ten, and the ninth is a permanent lock that only the "Forgot
+password" email link clears.
+
+| Field | Data type | Description |
+| --- | --- | --- |
+| `user_id` | `uuid` (PK, FK → `profiles.id`) | Account the counter belongs to. |
+| `email` | `text` | Lower-cased email used for lookups before a session exists. |
+| `failed_attempts` | `integer` | Consecutive failures (capped at 9); resets to zero after a good password. |
+| `lock_tier` | `integer` | Highest tier reached (0, 1, 2); tiers 1 and 2 are timed locks. |
+| `locked_until` | `timestamp with time zone` | Expiry of the current timed lock; null when open or permanently locked. |
+| `locked_at` | `timestamp with time zone` | Set on the permanent (third-tier) lock; null otherwise. |
+| `lock_reason` | `text` | Why the row is locked. |
+| `last_failed_at` | `timestamp with time zone` | Time of the most recent failure. |
+| `updated_at` | `timestamp with time zone` | Last change to the row. |
+
+**Why a separate table:** every signed-in user may update their own `profiles`
+row through RLS, so storing the counter there would let a locked account clear
+its own lock. `login_attempts` has RLS enabled with **no policies** and all
+grants revoked, so it is reachable only through the `security definer` RPCs:
+
+- `login_status(p_email)` — anonymous-readable check used before the password
+  is verified, so a locked user sees the wait time (tier 1/2) or the recovery
+  instruction (permanent) rather than a generic "invalid credentials".
+- `record_failed_login(p_email)` — anonymous-callable incrementer; returns the
+  new count and lock state. A call that arrives while a lock is active reports
+  the remaining time without moving the counter, so the timer cannot be reset by
+  hammering the form. Unknown emails return a generic not-locked result so it
+  cannot be used to probe which addresses exist.
+- `clear_login_attempts(p_user_id)` — clears the streak after a good password;
+  self or admin only.
+- `unlock_account()` — clears the lock from a recovery session (`auth.uid()`
+  required), which is what makes the email link the confirmation step.
+
+Unknown emails are never stored, and a database without these objects simply
+skips the check, so older deployments keep signing in.
+
 ## 5. Organization and Safety Notes
 
 - Table descriptions in Supabase start with portal/domain labels, making the
@@ -431,6 +472,14 @@ for customer, vendor, and admin changes; reads are restricted to admins.
   until older clients are retired. `post_comments` is the retired legacy table.
 - Legacy accounting columns and `removed_*` backup tables are retained when
   present; they are not active application tables.
+- The 100-word limit is enforced by `count_words`, the `enforce_post_word_limit`
+  trigger on `posts`, and the check inside `append_chat_message`. It applies only
+  to inserted or changed content, so posts, comments, and chat messages written
+  before the limit was introduced stay readable.
+- The `login_attempts` tiered lock and the word-limit objects are additive and
+  idempotent. Applying the migration first is recommended but either order is
+  safe: a frontend running before the SQL simply skips the new checks, and the
+  SQL alone leaves older clients signing in normally.
 
 ## 6. Applying the Design
 

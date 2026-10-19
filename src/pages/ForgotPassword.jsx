@@ -76,6 +76,7 @@ export default function ForgotPassword() {
           <h1 className="text-2xl font-bold tracking-tight text-white">Forgot your password?</h1>
           <p className="mt-2 text-sm leading-6 text-white/55">
             Enter the email address linked to your {role} account. We’ll send a secure link to set a new password.
+            {' '}If your account was locked after too many failed sign-in attempts, this same link unlocks it.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-4">

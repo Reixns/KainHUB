@@ -21,6 +21,7 @@ import {
   signUp as supabaseSignUp,
   resetPassword as supabaseResetPassword,
   updatePassword as supabaseUpdatePassword,
+  unlockAccount as supabaseUnlockAccount,
   getProfile,
   loadRemoteState,
   persistState,
@@ -877,6 +878,11 @@ export function AppProvider({ children }) {
         success: false,
         message: remote.error?.message || 'Unable to sign in with this Supabase account.',
         countAttempt: remote.countAttempt === true,
+        locked: remote.locked === true,
+        permanent: remote.permanent === true,
+        secondsRemaining: remote.secondsRemaining,
+        failedAttempts: remote.failedAttempts,
+        attemptsRemaining: remote.attemptsRemaining,
       };
     }
     if (role === 'customer') {
@@ -1144,6 +1150,14 @@ export function AppProvider({ children }) {
       : { success: true };
   }, [auth.role]);
 
+  const unlockAccount = useCallback(async (role = auth.role || 'customer') => {
+    if (supabaseConfigError) return { success: false, message: supabaseConfigError };
+    const result = await supabaseUnlockAccount(role);
+    return result.success
+      ? { success: true }
+      : { success: false, message: result.error?.message || 'Unable to unlock this account.' };
+  }, [auth.role]);
+
   const logout = useCallback(() => {
     if (isSupabaseConfigured && auth.role) void getSupabaseClient(auth.role)?.auth.signOut();
     sessionStorage.removeItem(ACTIVE_PORTAL_KEY);
@@ -1384,6 +1398,7 @@ export function AppProvider({ children }) {
     toggleChatReaction,
     markChatMessageRead,
   } = useChatActions({
+    chats,
     setChats,
     auth,
     vendors,
@@ -1680,14 +1695,17 @@ export function AppProvider({ children }) {
       setVendors((current) => current.filter((item) => String(item.id) !== String(vendor.id)));
       setOrders((current) => current.filter((order) => (
         !vendorIds.has(String(order.vendorId))
-        && String(order.vendor_owner_id || order.vendorOwnerId) !== String(vendor.ownerId)
+        && (vendor.ownerId == null
+          || String(order.vendor_owner_id || order.vendorOwnerId) !== String(vendor.ownerId))
       )));
       setChats((current) => current.filter((chat) => !vendorIds.has(String(chat.vendorId))));
       setPosts((current) => current.filter((post) => (
-        String(post.authorId) !== String(vendor.ownerId)
+        (vendor.ownerId == null || String(post.authorId) !== String(vendor.ownerId))
         && !vendorIds.has(String(post.vendorId))
       )));
-      setNotifications((current) => current.filter((item) => String(item.userId) !== String(vendor.ownerId)));
+      setNotifications((current) => current.filter((item) => (
+        vendor.ownerId == null || String(item.userId) !== String(vendor.ownerId)
+      )));
       setFavorites((current) => current.filter((item) => (
         String(item.vendorId) !== String(vendor.id)
         && !(item.type === 'shop' && vendorIds.has(String(item.refId)))
@@ -1880,6 +1898,7 @@ export function AppProvider({ children }) {
     registerVendor,
     resetPassword,
     updatePassword,
+    unlockAccount,
     logout,
     updateProfile,
     uploadMediaFile,

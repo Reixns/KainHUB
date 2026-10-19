@@ -80,7 +80,7 @@ export default function VendorInventory() {
       ) : (
         <Card className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-surface-sunken text-left">
                 <tr>
                   <th className="px-4 py-2 font-medium text-body">Item</th>

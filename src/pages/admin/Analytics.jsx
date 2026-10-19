@@ -1,6 +1,7 @@
 import { BarChart3, DollarSign, ShoppingBag, Store, Users } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, formatPeso, LogoMark } from '@/components/UI';
+import SevenDayBarChart from '@/components/SevenDayBarChart';
 
 export default function AdminAnalytics() {
   const { orders, vendors, customers } = useApp();
@@ -27,30 +28,20 @@ export default function AdminAnalytics() {
       count: dayOrders.length,
     });
   }
-  const maxDayRev = Math.max(1, ...days.map((d) => d.revenue));
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-ink">Platform Analytics</h1>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-success-soft text-success flex items-center justify-center mb-2"><DollarSign className="w-5 h-5" /></div><div className="text-2xl font-bold">{formatPeso(totalRevenue)}</div><div className="text-xs text-muted">Total Revenue</div></Card>
-        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-blue/10 text-brand-strong flex items-center justify-center mb-2"><ShoppingBag className="w-5 h-5" /></div><div className="text-2xl font-bold">{orders.length}</div><div className="text-xs text-muted">Total Orders</div></Card>
-        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-teal-soft text-cat-teal-deep flex items-center justify-center mb-2"><Store className="w-5 h-5" /></div><div className="text-2xl font-bold">{vendors.filter(v => v.status === 'approved').length}</div><div className="text-xs text-muted">Approved Vendors</div></Card>
-        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-violet-soft text-cat-violet-deep flex items-center justify-center mb-2"><Users className="w-5 h-5" /></div><div className="text-2xl font-bold">{customers.length}</div><div className="text-xs text-muted">Customers</div></Card>
+        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-success-soft text-success flex items-center justify-center mb-2"><DollarSign className="w-5 h-5" /></div><div className="text-xl sm:text-2xl font-bold tabular-nums break-words">{formatPeso(totalRevenue)}</div><div className="text-xs text-muted">Total Revenue</div></Card>
+        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-blue/10 text-brand-strong flex items-center justify-center mb-2"><ShoppingBag className="w-5 h-5" /></div><div className="text-xl sm:text-2xl font-bold tabular-nums">{orders.length}</div><div className="text-xs text-muted">Total Orders</div></Card>
+        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-teal-soft text-cat-teal-deep flex items-center justify-center mb-2"><Store className="w-5 h-5" /></div><div className="text-xl sm:text-2xl font-bold tabular-nums">{vendors.filter(v => v.status === 'approved').length}</div><div className="text-xs text-muted">Approved Vendors</div></Card>
+        <Card className="p-4"><div className="w-10 h-10 rounded-lg bg-cat-violet-soft text-cat-violet-deep flex items-center justify-center mb-2"><Users className="w-5 h-5" /></div><div className="text-xl sm:text-2xl font-bold tabular-nums">{customers.length}</div><div className="text-xs text-muted">Customers</div></Card>
       </div>
 
       <Card className="p-5">
         <h2 className="font-semibold mb-4 flex items-center gap-2"><BarChart3 className="w-5 h-5 text-brand-strong" /> Revenue - Last 7 Days</h2>
-        <div className="flex items-end justify-between gap-2 h-48">
-          {days.map((d, i) => (
-            <div key={i} className="flex-1 flex flex-col items-center gap-1">
-              <div className="text-xs text-muted font-medium">{formatPeso(d.revenue)}</div>
-              <div className="w-full bg-cat-blue-deep rounded-t-md" style={{ height: `${(d.revenue / maxDayRev) * 100}%`, minHeight: d.revenue > 0 ? '12px' : '3px' }}></div>
-              <div className="text-xs text-muted">{d.label}</div>
-              <div className="text-xs font-medium">{d.count}</div>
-            </div>
-          ))}
-        </div>
+        <SevenDayBarChart days={days} valueKey="revenue" countKey="count" barClassName="bg-cat-blue-deep" countSuffix="" />
       </Card>
 
       <Card className="p-5">

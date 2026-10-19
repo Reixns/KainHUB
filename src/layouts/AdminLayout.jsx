@@ -2,7 +2,7 @@ import { NavLink, Outlet, Link, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Store, Users, ClipboardList, MessageSquare, AlertTriangle, Bell, BarChart3, Settings, ScrollText, User, LogOut, Shield, Menu, X, Utensils } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Toasts, isAdminNotification, PlatformLogo } from '@/components/UI';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function AdminLayout() {
   const { auth, logout, vendors, orders, posts, notifications, platformSettings } = useApp();
@@ -12,6 +12,23 @@ export default function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
   ));
+
+  // The initializer above only samples the viewport once. Rotating a phone or
+  // resizing a window across the 1024px breakpoint left the drawer in the wrong
+  // state: an overlay-and-scrim stuck over the content on the way down, or a
+  // hidden rail on the way up. Track the breakpoint for the life of the layout.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const mql = window.matchMedia('(min-width: 1024px)');
+    const onChange = (event) => setSidebarOpen(event.matches);
+    // Safari < 14 and older WebViews only expose the deprecated listener API.
+    if (mql.addEventListener) {
+      mql.addEventListener('change', onChange);
+      return () => mql.removeEventListener('change', onChange);
+    }
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }, []);
 
   const pendingVendors = vendors.filter((v) => v.status === 'pending').length;
   const activeOrders = orders.filter((o) => ['RECEIVED', 'PREPARING', 'READY', 'OUT FOR DELIVERY'].includes(o.status)).length;
@@ -145,7 +162,7 @@ export default function AdminLayout() {
           h-14 had to become min-h-14 because a fixed height would absorb the inset
           padding and squeeze the 44px controls in the bar back under the minimum.
         */}
-        <header className="sticky top-0 z-50 min-h-14 pt-[env(safe-area-inset-top)] border-b border-white/10 bg-[#101014]/95 flex items-center px-4 lg:px-8 gap-3 backdrop-blur-sm">
+        <header className="sticky top-0 z-50 min-h-14 pt-[env(safe-area-inset-top)] border-b border-white/10 bg-[#101014]/95 flex items-center pr-4 pl-[max(1rem,env(safe-area-inset-left))] lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))] gap-3 backdrop-blur-sm">
           <button type="button" aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'} aria-controls="admin-navigation" aria-expanded={sidebarOpen} className="tap-target rounded-xl text-white/70 transition-colors hover:bg-white/10 hover:text-white" onClick={() => setSidebarOpen((open) => !open)}>
             <Menu className="w-5 h-5 text-body" />
           </button>
@@ -166,7 +183,7 @@ export default function AdminLayout() {
         {/* pl-[max(0.75rem,env(safe-area-inset-left))] on the content too: below
             lg the sidebar is off-screen and main is full-width, which in landscape
             on a notched phone puts the first column under the left cut out. */}
-        <main className="w-full min-w-0 p-3 sm:p-5 lg:p-8 max-w-7xl mx-auto page-enter pl-[max(0.75rem,env(safe-area-inset-left))]">
+        <main className="w-full min-w-0 py-3 pr-3 pl-[max(0.75rem,env(safe-area-inset-left))] sm:py-5 sm:pr-5 sm:pl-[max(1.25rem,env(safe-area-inset-left))] lg:py-8 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))] max-w-7xl mx-auto page-enter">
           <Outlet />
         </main>
       </div>

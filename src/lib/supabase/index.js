@@ -15,6 +15,7 @@ export {
   signUp,
   resetPassword,
   updatePassword,
+  unlockAccount,
 } from '@/lib/supabase/auth';
 export { getProfile, upsertProfile } from '@/lib/supabase/profile';
 export { uploadMedia } from '@/lib/supabase/media';

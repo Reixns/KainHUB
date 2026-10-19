@@ -3,6 +3,7 @@ import { User, Mail, Phone, MapPin, Save, Store, LogOut } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input } from '@/components/UI';
 import { InfoRow, MediaButton, LogoAvatar } from '@/components/ProfileParts';
+import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import { useNavigate } from 'react-router-dom';
 
 export default function VendorProfile() {
@@ -20,6 +21,10 @@ export default function VendorProfile() {
   });
 
   const handleSave = async () => {
+    if (!isValidMobile(form.mobile)) {
+      showToast(mobileValidationMessage(), 'error');
+      return;
+    }
     const result = await updateProfile(form);
     if (result?.success !== false) setEditing(false);
   };
@@ -66,7 +71,7 @@ export default function VendorProfile() {
           <div className="space-y-3">
             <Input label="Shop Name" icon={Store} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             <Input label="Owner Name" icon={User} value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} />
-            <Input label="Mobile" icon={Phone} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+            <Input label="Mobile" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: sanitizeMobile(e.target.value) })} />
             <Input label="Email" icon={Mail} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
             <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
             <div className="flex gap-2">

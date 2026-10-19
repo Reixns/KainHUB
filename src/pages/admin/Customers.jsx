@@ -43,7 +43,7 @@ export default function AdminCustomers() {
       <Tabs tabs={tabs} activeTab={tab} onChange={setTab} />
       <div className="mt-4 space-y-3">
         {filtered.length === 0 ? <EmptyState title="No customers" /> : filtered.map((c) => {
-          const custOrders = orders.filter((o) => o.customerId === c.id);
+          const custOrders = orders.filter((o) => String(o.customerId) === String(c.id));
           const totalSpent = custOrders.filter((o) => o.status === 'COMPLETED').reduce((s, o) => s + o.total, 0);
           return (
             <Card key={c.id} className="p-4">

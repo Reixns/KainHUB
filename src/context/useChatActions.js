@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { nextLocalId, normalizeChats } from '@/context/persistence';
+import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
 
 const appendMessage = (chats, { chatId, vendorId, customerId, message }) => {
   const existing = chats.find(
@@ -36,7 +37,7 @@ const chatKey = (vendorId, customerId) => `chat-${vendorId}-${customerId}`;
 */
 const sameParticipant = (left, right) => String(left ?? '') === String(right ?? '');
 
-export function useChatActions({ setChats, auth, vendors, persistMessage, persistMessageRead, showToast }) {
+export function useChatActions({ chats, setChats, auth, vendors, persistMessage, persistMessageRead, showToast }) {
   const persistImmediately = useCallback((payload, role = auth.role) => {
     if (!persistMessage || !auth.user) return;
     void persistMessage(payload, role).catch((error) => {
@@ -77,35 +78,45 @@ export function useChatActions({ setChats, auth, vendors, persistMessage, persis
     })));
   }, [setChats, auth]);
 
+  /*
+    Resolve the thread from the current snapshot, not from inside a setState
+    updater. React may defer the updater to the next render, so the old version
+    found `result` still null when it returned and Chat.jsx never opened the
+    requested thread. Reading `chats` and only calling setChats to append keeps
+    the return value correct and synchronous for a caller that uses it in the
+    same tick.
+  */
   const getOrCreateChat = useCallback((vendorId, customerId = auth.role === 'customer' ? auth.user?.id : null) => {
     if (!vendorId || !customerId) return null;
-    const chatId = chatKey(vendorId, customerId);
-    let result = null;
-    setChats((current) => {
-      const existing = current.find(
-        (chat) => sameParticipant(chat.vendorId, vendorId) && sameParticipant(chat.customerId, customerId),
-      );
-      if (existing) {
-        // Returned rather than a fresh empty thread, so a caller that renders the
-        // return value directly sees the history instead of a blank screen.
-        result = existing;
-        return current;
-      }
-      const created = { id: chatId, vendorId, customerId, messages: [], updatedAt: new Date().toISOString() };
-      result = created;
-      // Normalized even on insert: two tabs racing to open the same thread both
-      // miss the `existing` lookup above and both insert, and this collapses the
-      // pair into the single canonical row `Chat.jsx` can then find.
-      return normalizeChats([...current, created]);
-    });
-    return result;
-  }, [setChats, auth]);
+    const existing = (chats || []).find(
+      (chat) => sameParticipant(chat.vendorId, vendorId) && sameParticipant(chat.customerId, customerId),
+    );
+    if (existing) return existing;
+    const created = {
+      id: chatKey(vendorId, customerId),
+      vendorId,
+      customerId,
+      messages: [],
+      updatedAt: new Date().toISOString(),
+    };
+    // Normalized even on insert: two tabs racing to open the same thread both
+    // miss the lookup above and both insert, and this collapses the pair into
+    // the single canonical row Chat.jsx can then find.
+    setChats((current) => normalizeChats([...current, created]));
+    return created;
+  }, [chats, setChats, auth]);
 
   const sendChatMessage = useCallback(({ vendorId, customerId, text, image, replyTo }) => {
     // A photo on its own is a valid message, so the caption is optional. The
     // old `!text?.trim()` guard rejected image-only sends outright.
     const body = text?.trim() || '';
     if ((!body && !image) || !auth.user) return;
+    // Defence in depth: the composer blocks an over-limit draft, but every send
+    // path (text, image caption, quick reply) funnels through here.
+    if (body && countWords(body) > WORD_LIMIT) {
+      showToast(wordLimitMessage(), 'error');
+      return;
+    }
     const senderRole = auth.role;
     const senderId = auth.user.id;
     const chatId = `chat-${vendorId}-${customerId}`;
@@ -134,7 +145,7 @@ export function useChatActions({ setChats, auth, vendors, persistMessage, persis
       message,
     }));
     persistImmediately({ chatId, vendorId, customerId, message });
-  }, [setChats, auth, persistImmediately]);
+  }, [setChats, auth, persistImmediately, showToast]);
 
   const markChatMessageRead = useCallback(({ chatId, vendorId, customerId, messageId }) => {
     if (!auth.user || !chatId || !messageId) return;

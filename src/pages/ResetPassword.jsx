@@ -13,7 +13,7 @@ const ROLE_LOGIN_PATH = {
 };
 
 export default function ResetPassword() {
-  const { updatePassword, auth, authReady, logout } = useApp();
+  const { updatePassword, unlockAccount, auth, authReady, logout } = useApp();
   const location = useLocation();
   const requestedRole = new URLSearchParams(location.search).get('role');
   const role = Object.hasOwn(ROLE_LOGIN_PATH, requestedRole) ? requestedRole : 'customer';
@@ -58,6 +58,15 @@ export default function ResetPassword() {
       setError(result.message);
       return;
     }
+    // The recovery link proves the mailbox was reached, so this is also the point
+    // that clears a failed-login lock. Done before logout because the unlock RPC
+    // needs the session. Best effort: a database without the RPC has nothing to
+    // unlock and sign-in will still work the first time.
+    try {
+      await unlockAccount(role);
+    } catch {
+      // Ignore: unlocking is a convenience on top of the password change.
+    }
     logout();
     setSuccess(true);
   };
@@ -74,7 +83,7 @@ export default function ResetPassword() {
               <CheckCircle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
               <div>
                 <h1 className="font-semibold text-white">Password updated</h1>
-                <p className="mt-1 text-sm">Your new password is ready. Sign in using it to continue.</p>
+                <p className="mt-1 text-sm">Your new password is ready and your account is unlocked. Sign in using it to continue.</p>
               </div>
             </div>
             <Button as={Link} to={ROLE_LOGIN_PATH[role]} className="w-full" size="lg">

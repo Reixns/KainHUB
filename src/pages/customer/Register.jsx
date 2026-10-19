@@ -16,6 +16,7 @@ import {
 import { useApp } from '@/context/AppContext';
 import { Button, Input, PlatformLogo } from '@/components/UI';
 import { validatePassword } from '@/lib/supabase';
+import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import PasswordRequirements from '@/components/PasswordRequirements';
 
 export default function CustomerRegister() {
@@ -45,7 +46,8 @@ export default function CustomerRegister() {
     const emailValue = form.email.trim();
     const emailParts = emailValue.split('@');
     if (!form.fullName.trim()) errs.fullName = 'Full name required';
-    if (!form.mobile.trim()) errs.mobile = 'Mobile number required';
+    if (!form.mobile) errs.mobile = 'Mobile number required';
+    else if (!isValidMobile(form.mobile)) errs.mobile = mobileValidationMessage();
     if (!emailValue || emailParts.length !== 2 || !emailParts.every((part) => part.trim().length > 0)) {
       errs.email = 'Email required';
     }
@@ -131,7 +133,7 @@ export default function CustomerRegister() {
 
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Input label="Full name" icon={User} value={form.fullName} onChange={updateField('fullName')} error={errors.fullName} placeholder="Juan Dela Cruz" autoComplete="name" required className="register-input lg:!py-2" />
-                  <Input label="Mobile number" icon={Phone} type="tel" value={form.mobile} onChange={updateField('mobile')} error={errors.mobile} placeholder="0917XXXXXXX" autoComplete="tel" required className="register-input lg:!py-2" />
+                  <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm((current) => ({ ...current, mobile: sanitizeMobile(e.target.value) }))} error={errors.mobile} placeholder="09171234567" autoComplete="tel" required className="register-input lg:!py-2" />
                   <Input label="Email address" icon={Mail} type="email" value={form.email} onChange={updateField('email')} error={errors.email} placeholder="you@example.com" autoComplete="email" required className="register-input sm:col-span-2 lg:col-span-1 lg:!py-2" />
                   <Input label="Zone 1 address" icon={MapPin} value={form.address} onChange={updateField('address')} error={errors.address} placeholder="Block X Lot Y, Lancaster Zone 1" autoComplete="street-address" required className="register-input sm:col-span-2 lg:col-span-1 lg:!py-2" />
                 </div>

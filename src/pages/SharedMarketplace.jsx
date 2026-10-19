@@ -4,6 +4,7 @@ import { Heart, MessageCircle, Flag, Pin, EyeOff, Trash2, Send, Shield, CheckCir
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Textarea, Avatar, Modal, Badge, EmptyState, ConfirmDialog, getProductImage, isImageSource, timeAgo, formatPeso, MediaImage } from '@/components/UI';
 import FavoriteButton from '@/components/FavoriteButton';
+import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
 
 const POST_TYPES = {
   customer: [
@@ -578,6 +579,8 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
   const [pinned, setPinned] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const contentWords = countWords(content);
+  const contentOverLimit = contentWords > WORD_LIMIT;
 
   const types = POST_TYPES[role] || POST_TYPES.customer;
 
@@ -592,6 +595,10 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
 
   const handleSubmit = async () => {
     if (!content.trim()) return;
+    if (countWords(content) > WORD_LIMIT) {
+      setError(wordLimitMessage());
+      return;
+    }
     setSaving(true);
     setError('');
     let image = null;
@@ -616,7 +623,7 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={!content.trim()} loading={saving}>
+          <Button onClick={handleSubmit} disabled={!content.trim() || contentOverLimit} loading={saving}>
             {role === 'admin' ? 'Post announcement' : 'Post'}
           </Button>
         </>
@@ -652,6 +659,9 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
         onChange={(e) => setContent(e.target.value)}
         autoFocus
       />
+      <div className={`mt-1.5 text-right text-xs ${contentOverLimit ? 'font-semibold text-danger' : 'text-muted'}`}>
+        {contentWords}/{WORD_LIMIT} words{contentOverLimit ? ' — over the limit' : ''}
+      </div>
 
       {imagePreview && (
         <div className="relative mt-3">
@@ -684,10 +694,12 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
 
 function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment, onDeleteComment }) {
   const [commentText, setCommentText] = useState('');
+  const commentWords = countWords(commentText);
+  const commentOverLimit = commentWords > WORD_LIMIT;
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (commentText.trim()) {
+    if (commentText.trim() && !commentOverLimit) {
       onComment(commentText);
       setCommentText('');
     }
@@ -761,10 +773,13 @@ function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment
           placeholder="Write a comment..."
           className="flex-1 px-3 py-2 border border-hairline rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-brand-line focus:border-brand-400"
         />
-        <button type="submit" aria-label="Post comment" disabled={!commentText.trim()} className="w-11 h-11 bg-brand text-white rounded-full flex items-center justify-center disabled:opacity-50 shrink-0">
+        <button type="submit" aria-label="Post comment" disabled={!commentText.trim() || commentOverLimit} className="w-11 h-11 bg-brand text-white rounded-full flex items-center justify-center disabled:opacity-50 shrink-0">
           <Send className="w-4 h-4" />
         </button>
       </form>
+      <div className={`mt-1 text-right text-[11px] ${commentOverLimit ? 'font-semibold text-danger' : 'text-muted'}`}>
+        {commentWords}/{WORD_LIMIT} words{commentOverLimit ? ' — over the limit' : ''}
+      </div>
     </Modal>
   );
 }

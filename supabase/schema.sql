@@ -7,25 +7,24 @@
 --
 --   This is the canonical full-schema script for fresh and existing databases.
 --   It creates/backfills role-specific profiles and reconciles active tables
---   inside a single transaction; any failure rolls the transaction back. It
---   also drops the retired objects listed below and the activity log table.
---   Review/backup those objects before running this full script.
+--   inside a single transaction; any failure rolls the transaction back.
 --
---   It does not remove portal accounts, orders, or shops. It drops the retired
---   table/columns listed below, the activity log table and the temporary
---   `_canonical_columns` table. It never weakens RLS.
+--   Existing account, order, shop, audit, and legacy comment data is preserved.
+--   Retired tables and columns are kept for manual archival/removal after an
+--   operator has reviewed and backed up any data they contain. The temporary
+--   `_canonical_columns` table is removed. It never weakens RLS.
 --
 -- DEPLOY ORDER
 --   This script keeps legacy profile columns synchronized so older clients
 --   remain compatible. Deploy the matching frontend to use role-profile reads
---   and writes. The script also retires the unrelated legacy objects below.
+--   and writes. Legacy objects not used by the app are retained.
 --
--- RETIRED OBJECTS  (legacy objects dropped after any needed data is merged)
+-- LEGACY OBJECTS  (preserved; not used by current app code)
 --   post_comments
 --       A second comment store the app never used. Post comments live in the
 --       `posts.comments` jsonb column, which is what every feed screen reads.
 --   activity_logs
---       Cross-portal audit history is no longer stored by this application.
+--       Cross-portal audit history is no longer written by this application.
 --   vendors.category_id
 --       A generated slug next to `vendors.category`; no code ever read it.
 --   posts.likes
@@ -112,8 +111,8 @@
 
 begin;
 
--- Retire the database audit trail before any backfills or migrations can fire
--- its old triggers. The table contents are intentionally discarded.
+-- Stop writing to the retired database audit trail, but retain the table and
+-- its historical rows. Archive or remove it only after an operator review.
 do $$
 declare
   activity_trigger record;
@@ -137,7 +136,6 @@ begin
 end $$;
 
 drop function if exists public.log_portal_activity();
-drop table if exists public.activity_logs;
 
 -- -----------------------------------------------------------------------------
 -- 1. Extensions and enum types
@@ -1017,20 +1015,15 @@ begin
   end loop;
 end $$;
 
--- 6b. Drop the second comment store. The app reads and writes comments in
--- `posts.comments`; nothing ever wrote a row here.
-
-drop table if exists public.post_comments;
-
--- 6c. Drop the two columns that no longer have a home.
+-- 6b. Retain the legacy comment table and unused columns. The app uses
+-- `posts.comments` and `posts.liked_by`; these legacy values may still be
+-- useful for recovery and are not removed by this migration.
 --
 -- `category_id` was a generated slug beside `category` that no code read.
 -- `likes` was a counter the client maintained by hand next to `liked_by`, so
 -- the two could disagree; the count is now derived from the list everywhere.
 --
--- The notice reports the rows where the counter and the list disagreed, so a
--- like count that looks wrong after this run can be explained rather than
--- guessed at.
+-- The notice reports any mismatch, without deleting either source of data.
 
 do $$
 declare
@@ -1049,16 +1042,22 @@ begin
           where likes is distinct from coalesce(jsonb_array_length(liked_by), 0)'
         into disagreeing;
       raise notice 'posts.likes: row(s) whose counter disagreed with liked_by: %', disagreeing;
-      alter table public.posts drop column likes;
-      raise notice 'dropped public.posts.likes (use jsonb_array_length(liked_by))';
+      raise notice 'retained public.posts.likes; current app derives counts from liked_by';
     else
       raise notice 'skipped public.posts.likes: column does not exist';
     end if;
   end if;
 
   if to_regclass('public.vendors') is not null then
-    alter table public.vendors drop column if exists category_id;
-    raise notice 'dropped public.vendors.category_id';
+    if exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'vendors'
+        and column_name = 'category_id'
+    ) then
+      raise notice 'retained public.vendors.category_id for data preservation';
+    end if;
   end if;
 end $$;
 
@@ -3174,19 +3173,19 @@ select
   ), 'NONE') as policies,
   (select count(*) from public.favorites) as favourites_rows;
 
--- Retired objects must all be gone. Anything above 0 means section 6 did not
--- finish and the post-condition in section 17 will refuse to commit.
+-- Legacy objects are retained for data preservation; their presence is
+-- informational and does not block the migration.
 select
   (select count(*) from information_schema.tables
     where table_schema = 'public'
       and table_name in ('post_comments', 'activity_logs'))
-    as retired_tables_left,
+    as preserved_legacy_tables,
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'vendors' and column_name = 'category_id')
-    as retired_vendor_columns_left,
+    as preserved_vendor_category_columns,
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'posts' and column_name = 'likes')
-    as retired_post_columns_left;
+    as preserved_post_like_columns;
 
 -- Legacy fee/discount columns from the removed delivery-fee design. They are
 -- never created here; a non-zero count means the live database still carries
@@ -3327,25 +3326,11 @@ declare
   ratings_order_key boolean;
   notification_key boolean;
   order_item_key boolean;
-  retired_tables integer;
-  retired_columns integer;
   detail_cols integer;
   role_tables integer;
   missing_role_profiles bigint;
   role_rls boolean;
 begin
-  -- Retired tables must be gone; role profile tables are required.
-  select count(*) into retired_tables
-  from information_schema.tables
-  where table_schema = 'public'
-    and table_name in ('post_comments', 'activity_logs');
-
-  if retired_tables <> 0 then
-    raise exception
-      '% retired table(s) are still present in public. Section 6 did not finish. Nothing has been committed.',
-      retired_tables;
-  end if;
-
   select count(*) into role_tables
   from information_schema.tables
   where table_schema = 'public'
@@ -3404,17 +3389,6 @@ begin
      or has_function_privilege('anon', 'public.resolve_account_report(bigint)', 'EXECUTE') then
     raise exception
       'Account report RPC grants are incomplete or exposed to anon. Nothing has been committed.';
-  end if;
-
-  select count(*) into retired_columns
-  from information_schema.columns
-  where (table_schema = 'public' and table_name = 'vendors' and column_name = 'category_id')
-     or (table_schema = 'public' and table_name = 'posts' and column_name = 'likes');
-
-  if retired_columns <> 0 then
-    raise exception
-      '% retired column(s) are still present (vendors.category_id / posts.likes). Nothing has been committed.',
-      retired_columns;
   end if;
 
   select count(*) into detail_cols

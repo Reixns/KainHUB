@@ -54,18 +54,15 @@ The database follows the customer, vendor, and admin portal workflows.
 [`supabase/schema.sql`](./supabase/schema.sql) label each table with the portal
 that uses it and its role in the workflow.
 
-See [`DATABASE_DESIGN.md`](./DATABASE_DESIGN.md) for portal-by-portal data
-flows, access notes, entity relationships, and the field/type dictionary.
-Existing marketplace table names are retained for compatibility with the app.
-
 Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
 to create or reconcile the complete schema, including role-specific profile
 tables, data backfill, RLS policies, and the compatibility trigger. The script
-also removes the retired `activity_logs` audit table and its historical data.
+preserves existing accounts, orders, shops, audit/comment tables, and legacy
+columns; review and back up any data before manually removing retired objects.
 It installs the authenticated Marketplace comment RPCs used to add and delete
-comments on posts. The old
-`profiles` detail columns remain synchronized so deployed older clients
-continue working; do not remove them until those clients have been retired.
+comments on posts. The old `profiles` detail columns remain synchronized so
+deployed older clients continue working; do not remove them until those clients
+have been retired.
 
 ## Publish changes
 

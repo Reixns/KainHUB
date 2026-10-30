@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, PackageX, Package, Megaphone, Share2, UtensilsCro
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, formatPeso, Modal, Textarea, Badge, ConfirmDialog, EmptyState, getProductImage } from '@/components/UI';
 import ProductCategoryField from '@/components/ProductCategoryField';
+import { FIELD_CHAR_LIMITS, findCharacterLimitViolation, characterLimitMessage } from '@/lib/textLimits';
 
 export default function VendorMenu() {
   const { auth, addVendorMenu, updateVendorMenu, deleteVendorMenu, postVendorProduct, uploadMediaFile, showToast } = useApp();
@@ -46,8 +47,20 @@ export default function VendorMenu() {
   };
 
   const handleSave = () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) {
+      showToast('Please enter an item name.', 'error');
+      return;
+    }
     if (uploadingImage) return;
+    const violation = findCharacterLimitViolation({
+      productName: form.name,
+      productDescription: form.description,
+      category: form.category,
+    });
+    if (violation) {
+      showToast(characterLimitMessage(violation.limit), 'error');
+      return;
+    }
     const data = {
       name: form.name,
       description: form.description,
@@ -181,7 +194,7 @@ export default function VendorMenu() {
                 else showToast(result.message || 'Unable to upload menu image.', 'error');
                 setUploadingImage(false);
               }}
-              className="w-full px-3 py-2.5 min-h-11 text-sm bg-white border border-hairline-strong rounded-control hover:border-hairline-hover file:mr-3 file:py-1 file:px-2.5 file:rounded file:border-0 file:bg-surface-hover file:text-xs file:font-medium file:text-body disabled:opacity-50"
+              className="w-full px-3 py-2.5 min-h-11 text-sm bg-white border border-hairline-strong rounded-control hover:border-hairline-hover file:mr-3 file:py-1 file:px-2.5 file:rounded file:border-0 file:bg-white/10 file:text-xs file:font-medium file:text-white/80 disabled:opacity-50"
             />
             {uploadingImage && <p className="mt-1 text-xs text-muted">Uploading image...</p>}
             {getProductImage(form.image) && (
@@ -191,8 +204,8 @@ export default function VendorMenu() {
               <p className="mt-1 text-xs text-subtle">Optional. Items with a photo get more orders.</p>
             )}
           </div>
-          <Input label="Item Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Textarea label="Description" rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          <Input label="Item Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxCharacters={FIELD_CHAR_LIMITS.productName} maxLength={FIELD_CHAR_LIMITS.productName} />
+          <Textarea label="Description" rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} maxCharacters={FIELD_CHAR_LIMITS.productDescription} maxLength={FIELD_CHAR_LIMITS.productDescription} />
           <div className="grid grid-cols-2 gap-3">
             <Input label="Price (₱)" type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
             <Input label="Stock" type="number" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />

@@ -1,5 +1,5 @@
 import { NavLink, Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
-import { Store, ClipboardList, User, ShoppingCart, Bell, LogOut, Utensils, MessageSquare, Search, Heart, Users } from 'lucide-react';
+import { Store, ClipboardList, User, ShoppingCart, Bell, LogOut, Utensils, MessageSquare, Search, Heart, Users, Settings } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Toasts, Avatar, isEmojiSource, PlatformLogo } from '@/components/UI';
 import { useEffect, useRef, useState } from 'react';
@@ -74,14 +74,15 @@ export default function CustomerLayout() {
       */}
       <header className="sticky top-0 z-50 shrink-0 border-b border-white/10 bg-[#101014] pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex h-14 min-w-0 max-w-7xl items-center gap-3 pr-4 pl-[max(1rem,env(safe-area-inset-left))] lg:gap-4 lg:pr-8 lg:pl-[max(2rem,env(safe-area-inset-left))]">
-          <Link to="/customer" className="flex items-center gap-2.5 shrink-0" aria-label="KainHUB home">
-            <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden text-white">
+          <Link to="/customer" className="flex shrink-0 items-center gap-2" aria-label="KainHUB home">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden text-white">
               <PlatformLogo src={platformSettings.logo} alt="" />
             </span>
+            <span className="hidden text-sm font-semibold tracking-tight text-white sm:inline">KainHUB</span>
           </Link>
 
           {/* Keep the primary navigation focused; account destinations live in the profile menu. */}
-          <nav className="hidden shrink-0 items-center gap-1 rounded-2xl border border-white/[0.06] bg-white/[0.025] p-1 lg:flex" aria-label="Primary">
+          <nav className="hidden shrink-0 items-center gap-1 lg:flex" aria-label="Primary">
             <HeaderNavLink to="/customer/shops" icon={Store}>Shops</HeaderNavLink>
             <HeaderNavLink to="/customer/foods" icon={Utensils}>Foods</HeaderNavLink>
             <HeaderNavLink to="/customer/community" icon={Users}>Community</HeaderNavLink>
@@ -115,7 +116,7 @@ export default function CustomerLayout() {
             </div>
           </form>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1 border-l border-white/10 pl-2 lg:ml-0 lg:gap-1.5 lg:pl-3">
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 lg:ml-0 lg:gap-1">
             <Link
               to="/customer/messages"
               aria-label={unreadChatCount > 0 ? `Chat, ${unreadChatCount} unread messages` : 'Chat'}
@@ -214,6 +215,9 @@ export default function CustomerLayout() {
                 <span className="ml-auto text-xs font-semibold text-brand-strong tabular-nums">{favoriteCount}</span>
               )}
             </Link>
+            <Link to="/customer/settings" onClick={() => setMenuOpen(false)} className="flex items-center gap-2.5 min-h-11 px-4 py-2 text-sm text-body hover:bg-surface-sunken">
+              <Settings className="w-4 h-4 text-subtle" /> Settings
+            </Link>
             <button type="button" onClick={handleLogout} className="w-full flex items-center gap-2.5 min-h-11 px-4 py-2 text-sm text-danger hover:bg-danger-soft">
               <LogOut className="w-4 h-4" /> Log out
             </button>
@@ -256,9 +260,8 @@ export default function CustomerLayout() {
         <div className="flex">
           <BottomNav to="/customer/shops" icon={Store} label="Shops" />
           <BottomNav to="/customer/foods" icon={Utensils} label="Foods" />
+          <BottomNav to="/customer/community" icon={Users} label="Community" />
           <BottomNav to="/customer/orders" icon={ClipboardList} label="Orders" />
-          <BottomNav to="/customer/messages" icon={MessageSquare} label="Chat" count={unreadChatCount} />
-          <BottomNav to="/customer/profile" icon={User} label="Profile" />
         </div>
         <div className="h-[env(safe-area-inset-bottom)]" />
       </nav>
@@ -274,8 +277,10 @@ function HeaderNavLink({ to, icon: Icon, children, end }) {
       to={to}
       end={end}
       className={({ isActive }) =>
-        `inline-flex min-h-9 items-center gap-1.5 rounded-xl px-2.5 text-sm transition-colors ${
-          isActive ? 'bg-white/10 text-violet-200 font-semibold ring-1 ring-inset ring-white/10' : 'text-white/65 hover:bg-white/[0.06] hover:text-white'
+        `relative inline-flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-sm transition-colors ${
+          isActive
+            ? 'font-semibold text-white after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-violet-300'
+            : 'text-white/60 hover:bg-white/[0.05] hover:text-white'
         }`
       }
     >
@@ -291,8 +296,8 @@ function BottomNav({ to, icon: Icon, label, end, count }) {
       to={to}
       end={end}
       className={({ isActive }) =>
-        `flex-1 flex flex-col items-center justify-center gap-1 min-h-14 py-2 relative transition-colors ${
-          isActive ? 'text-violet-300' : 'text-white/55 hover:text-white'
+        `relative flex min-h-14 flex-1 flex-col items-center justify-center gap-1 py-2 transition-colors ${
+          isActive ? 'text-violet-200' : 'text-white/50 hover:text-white/80'
         }`
       }
     >

@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { getShareCooldownMessage, nextLocalId, PRODUCT_SHARE_COOLDOWN_MS } from '@/context/persistence';
 import { getSupabaseClient, isSupabaseConfigured } from '@/lib/supabase/client';
 import { clearStoreStatusPin, pinStoreStatus, pinVendorStatus } from '@/lib/supabase/state';
+import { characterLimitMessage, findCharacterLimitViolation } from '@/lib/textLimits';
 
 /*
   Menu edits are applied to `vendors` first and the resulting menu is then
@@ -24,13 +25,35 @@ const applyVendorMenuUpdate = (setVendors, setAuth, auth, vendorId, mapMenu, ven
 
 export function useVendorActions({ setVendors, setCustomers, setPosts, setAuth, auth, vendors, customers, posts, showToast }) {
   const updateVendor = useCallback((vendorId, updates) => {
+    const violation = findCharacterLimitViolation({
+      shopName: updates.name,
+      ownerName: updates.ownerName,
+      address: updates.address,
+      category: updates.category,
+      operatingHours: updates.operatingHours,
+      shopDescription: updates.description,
+    });
+    if (violation) {
+      showToast(characterLimitMessage(violation.limit), 'error');
+      return false;
+    }
     setVendors((list) => list.map((v) => (String(v.id) === String(vendorId) ? { ...v, ...updates } : v)));
     if (auth.user && String(auth.user.id) === String(vendorId)) {
       setAuth((a) => ({ ...a, user: { ...a.user, ...updates } }));
     }
-  }, [setVendors, setAuth, auth]);
+    return true;
+  }, [setVendors, setAuth, auth, showToast]);
 
   const addVendorMenu = useCallback((vendorId, item) => {
+    const violation = findCharacterLimitViolation({
+      productName: item.name,
+      productDescription: item.description,
+      category: item.category,
+    });
+    if (violation) {
+      showToast(characterLimitMessage(violation.limit), 'error');
+      return false;
+    }
     const newItem = { ...item, id: nextLocalId() };
     const current = vendors.find((v) => String(v.id) === String(vendorId));
     const newMenu = [...(current?.menu || []), newItem];
@@ -39,6 +62,7 @@ export function useVendorActions({ setVendors, setCustomers, setPosts, setAuth, 
       setAuth((a) => ({ ...a, user: { ...a.user, menu: newMenu } }));
     }
     showToast('Product added to your menu.', 'success');
+    return true;
   }, [setVendors, setAuth, auth, vendors, showToast]);
 
   const postVendorProduct = useCallback((vendorId, itemId, { publishAt, expiresAt } = {}) => {
@@ -128,10 +152,20 @@ export function useVendorActions({ setVendors, setCustomers, setPosts, setAuth, 
   }, [vendors, posts, setPosts, showToast]);
 
   const updateVendorMenu = useCallback((vendorId, itemId, updates) => {
+    const violation = findCharacterLimitViolation({
+      productName: updates.name,
+      productDescription: updates.description,
+      category: updates.category,
+    });
+    if (violation) {
+      showToast(characterLimitMessage(violation.limit), 'error');
+      return false;
+    }
     applyVendorMenuUpdate(setVendors, setAuth, auth, vendorId, (menu) => menu.map((m) => (
       String(m.id) === String(itemId) ? { ...m, ...updates } : m
     )), vendors);
-  }, [setVendors, setAuth, auth, vendors]);
+    return true;
+  }, [setVendors, setAuth, auth, vendors, showToast]);
 
   const deleteVendorMenu = useCallback((vendorId, itemId) => {
     applyVendorMenuUpdate(setVendors, setAuth, auth, vendorId, (menu) => menu.filter((m) => String(m.id) !== String(itemId)), vendors);

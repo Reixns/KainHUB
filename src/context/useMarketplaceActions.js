@@ -1,11 +1,22 @@
 import { useCallback } from 'react';
 import { nextLocalId } from './persistence';
-import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
+import { isWithinMessageLimits, messageLimitMessage } from '@/lib/textLimits';
 
-export function useMarketplaceActions({ setPosts, auth, showToast }) {
-  const addPost = useCallback((post) => {
-    if (countWords(post?.content) > WORD_LIMIT) {
-      showToast(wordLimitMessage(), 'error');
+export function useMarketplaceActions({
+  setPosts,
+  auth,
+  showToast,
+  persistAdminPostModeration,
+  deleteSupabasePost,
+  persistMarketplaceComment,
+  deleteMarketplaceComment,
+  persistAdminMarketplacePost,
+  reportSupabasePost,
+  isSupabaseConfigured,
+}) {
+  const addPost = useCallback(async (post) => {
+    if (!isWithinMessageLimits(post?.content)) {
+      showToast(messageLimitMessage(), 'error');
       return null;
     }
     const newPost = {
@@ -27,10 +38,19 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
       pinned: auth.role === 'admin' ? (post.pinned || false) : false,
       hidden: false,
     };
+    if (auth.role === 'admin' && isSupabaseConfigured) {
+      try {
+        await persistAdminMarketplacePost(newPost);
+      } catch (error) {
+        console.error('[admin] marketplace announcement could not be saved:', error);
+        showToast(error instanceof Error ? error.message : 'Could not publish the marketplace announcement.', 'error');
+        return null;
+      }
+    }
     setPosts((p) => [newPost, ...p]);
-    showToast('Post published!', 'success');
+    showToast(auth.role === 'admin' ? 'Marketplace announcement published!' : 'Post published!', 'success');
     return newPost;
-  }, [setPosts, auth, showToast]);
+  }, [setPosts, auth, showToast, isSupabaseConfigured, persistAdminMarketplacePost]);
 
   const toggleLikePost = useCallback((postId) => {
     if (!auth.user) return;
@@ -43,58 +63,140 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
     }));
   }, [setPosts, auth]);
 
-  const addComment = useCallback((postId, content) => {
-    if (!auth.user || !content.trim()) return;
-    if (countWords(content) > WORD_LIMIT) {
-      showToast(wordLimitMessage(), 'error');
-      return;
+  const addComment = useCallback(async (postId, content) => {
+    if (!auth.user || !content.trim()) return false;
+    if (!isWithinMessageLimits(content)) {
+      showToast(messageLimitMessage(), 'error');
+      return false;
     }
     const name = auth.role === 'vendor' ? auth.user.name : auth.user.fullName;
     const avatar = auth.role === 'vendor' ? auth.user.logo : (auth.user.avatar || '');
-    setPosts((list) => list.map((p) => {
-      if (p.id !== postId) return p;
-      const newComment = {
-        id: nextLocalId(),
-        authorId: auth.user.id,
-        authorName: name,
-        authorAvatar: avatar,
-        authorRole: auth.role,
-        content: content.trim(),
-        time: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-      };
-      return { ...p, comments: [...p.comments, newComment] };
-    }));
-  }, [setPosts, auth, showToast]);
+    const now = new Date().toISOString();
+    try {
+      const comment = isSupabaseConfigured
+        ? await persistMarketplaceComment(postId, content.trim(), auth.role)
+        : {
+            id: nextLocalId(),
+            authorId: auth.user.id,
+            authorName: name,
+            authorAvatar: avatar,
+            authorRole: auth.role,
+            content: content.trim(),
+            time: now,
+            createdAt: now,
+          };
+      setPosts((list) => list.map((post) => String(post.id) === String(postId)
+        ? { ...post, comments: [...(post.comments || []), comment], updatedAt: comment.createdAt || now }
+        : post));
+      showToast('Comment posted.', 'success');
+      return true;
+    } catch (error) {
+      showToast(error.message || 'Unable to post your comment.', 'error');
+      return false;
+    }
+  }, [setPosts, auth, showToast, isSupabaseConfigured, persistMarketplaceComment]);
 
-  const deleteComment = useCallback((postId, commentId) => {
-    if (!auth.user) return;
-    setPosts((list) => list.map((p) => {
-      if (p.id !== postId) return p;
-      return {
-        ...p,
-        comments: p.comments.filter((c) => c.id !== commentId || (auth.role !== 'admin' && String(c.authorId) !== String(auth.user.id))),
-      };
-    }));
-  }, [setPosts, auth]);
+  const deleteComment = useCallback(async (postId, commentId) => {
+    if (!auth.user) return false;
+    try {
+      if (isSupabaseConfigured) {
+        await deleteMarketplaceComment(postId, commentId, auth.role);
+      }
+      const updatedAt = new Date().toISOString();
+      setPosts((list) => list.map((post) => String(post.id) === String(postId)
+        ? {
+            ...post,
+            comments: (post.comments || []).filter((comment) => (
+              String(comment.id) !== String(commentId)
+              || (auth.role !== 'admin' && String(comment.authorId) !== String(auth.user.id))
+            )),
+            updatedAt,
+          }
+        : post));
+      showToast('Comment deleted.', 'success');
+      return true;
+    } catch (error) {
+      showToast(error.message || 'Unable to delete the comment.', 'error');
+      return false;
+    }
+  }, [setPosts, auth, showToast, isSupabaseConfigured, deleteMarketplaceComment]);
 
-  const deletePost = useCallback((postId) => {
-    setPosts((list) => list.filter((p) => p.id !== postId));
+  const deletePost = useCallback(async (postId) => {
+    if (auth.role === 'admin' && isSupabaseConfigured) {
+      try {
+        await deleteSupabasePost(postId);
+      } catch (error) {
+        showToast(error.message || 'Unable to delete the post.', 'error');
+        return;
+      }
+    }
+    setPosts((list) => list.filter((p) => String(p.id) !== String(postId)));
     showToast('Post deleted.', 'success');
-  }, [setPosts, showToast]);
+  }, [setPosts, showToast, auth.role, isSupabaseConfigured, deleteSupabasePost]);
 
-  const togglePinPost = useCallback((postId) => {
-    setPosts((list) => list.map((p) => p.id === postId ? { ...p, pinned: !p.pinned } : p));
-  }, [setPosts]);
+  const togglePinPost = useCallback(async (post, pinned) => {
+    if (auth.role !== 'admin') return;
+    const updatedAt = new Date().toISOString();
+    try {
+      if (isSupabaseConfigured) await persistAdminPostModeration(post, { pinned });
+      setPosts((list) => list.map((p) => String(p.id) === String(post.id) ? { ...p, pinned, updatedAt } : p));
+      showToast(pinned ? 'Post pinned.' : 'Post unpinned.', 'success');
+    } catch (error) {
+      showToast(error.message || 'Unable to update the post pin.', 'error');
+    }
+  }, [setPosts, showToast, auth.role, isSupabaseConfigured, persistAdminPostModeration]);
 
-  const toggleHidePost = useCallback((postId) => {
-    setPosts((list) => list.map((p) => p.id === postId ? { ...p, hidden: !p.hidden } : p));
-  }, [setPosts]);
+  const toggleHidePost = useCallback(async (post, hidden) => {
+    if (auth.role !== 'admin') return;
+    const updatedAt = new Date().toISOString();
+    try {
+      if (isSupabaseConfigured) await persistAdminPostModeration(post, { hidden });
+      setPosts((list) => list.map((p) => String(p.id) === String(post.id) ? { ...p, hidden, updatedAt } : p));
+      showToast(hidden ? 'Post hidden.' : 'Post visible again.', 'success');
+    } catch (error) {
+      showToast(error.message || 'Unable to update the post visibility.', 'error');
+    }
+  }, [setPosts, showToast, auth.role, isSupabaseConfigured, persistAdminPostModeration]);
 
-  const reportPost = useCallback((postId, reason) => {
-    setPosts((list) => list.map((p) => p.id === postId ? { ...p, reported: true, reportReason: reason } : p));
-    showToast('Post reported. Thank you.', 'success');
-  }, [setPosts, showToast]);
+  const reportPost = useCallback(async (postId, reason) => {
+    if (!auth.user) {
+      showToast('Sign in to report a post.', 'error');
+      return false;
+    }
+    if (!['Spam', 'Scam', 'Inappropriate', 'Fake Promotion', 'Offensive', 'Other'].includes(reason)) {
+      showToast('Choose a valid reason for reporting this post.', 'error');
+      return false;
+    }
+    try {
+      if (isSupabaseConfigured) await reportSupabasePost(postId, reason, auth.role);
+      setPosts((list) => list.map((post) => String(post.id) === String(postId)
+        ? { ...post, reported: true, reportReason: reason, updatedAt: new Date().toISOString() }
+        : post));
+      showToast('Post reported. Thank you.', 'success');
+      return true;
+    } catch (error) {
+      showToast(error.message || 'Unable to submit the post report.', 'error');
+      return false;
+    }
+  }, [auth.user, auth.role, setPosts, showToast, isSupabaseConfigured, reportSupabasePost]);
+
+  const resolvePostReport = useCallback(async (post) => {
+    if (auth.role !== 'admin') return false;
+    const updatedAt = new Date().toISOString();
+    try {
+      if (isSupabaseConfigured) {
+        await persistAdminPostModeration(post, { reported: false, reportReason: null });
+      }
+      setPosts((list) => list.map((item) => String(item.id) === String(post.id)
+        ? { ...item, reported: false, reportReason: null, updatedAt }
+        : item));
+      showToast('Report resolved.', 'success');
+      return true;
+    } catch (error) {
+      showToast(error.message || 'Unable to resolve the report.', 'error');
+      return false;
+    }
+  }, [auth.role, setPosts, showToast, isSupabaseConfigured, persistAdminPostModeration]);
 
   return {
     addPost,
@@ -105,5 +207,6 @@ export function useMarketplaceActions({ setPosts, auth, showToast }) {
     togglePinPost,
     toggleHidePost,
     reportPost,
+    resolvePostReport,
   };
 }

@@ -59,7 +59,7 @@ const reportWriteError = (operation, table, error) => {
 export async function loadRemoteState(userId, role) {
   const client = getSupabaseClient(role);
   if (!client) return null;
-  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult, shopRatingsResult, activityLogsResult] = await Promise.all([
+  const [vendorsResult, postsResult, ordersResult, notificationsResult, profilesResult, chatsResult, favoritesResult, shopRatingsResult, accountReportsResult] = await Promise.all([
     client.from('vendors').select('*, menu_items(*)').order('created_at', { ascending: false }),
     role === 'admin'
       ? client.from('posts').select('*').order('created_at', { ascending: false })
@@ -89,10 +89,10 @@ export async function loadRemoteState(userId, role) {
       ? client.from('favorites').select('*').eq('user_id', userId).order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
     userId && role === 'customer'
-      ? client.from('shop_ratings').select('order_number, vendor_legacy_id, rating, created_at').eq('customer_id', userId).order('created_at', { ascending: false })
+      ? client.from('shop_ratings').select('order_number, vendor_legacy_id, rating, comment_text, created_at').eq('customer_id', userId).order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
     role === 'admin'
-      ? client.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(100)
+      ? client.from('account_reports').select('*').order('created_at', { ascending: false })
       : Promise.resolve({ data: [] }),
   ]);
   if (role === 'admin') {
@@ -103,12 +103,14 @@ export async function loadRemoteState(userId, role) {
       ['notifications', notificationsResult],
       ['profiles', profilesResult],
       ['chats', chatsResult],
-      ['activity_logs', activityLogsResult],
+      ['account_reports', accountReportsResult],
     ].find(([, result]) => result.error);
     if (failedQuery) {
       const [table, result] = failedQuery;
       throw new Error(`Could not load admin ${table} from the database: ${result.error.message}`);
     }
+  } else if (postsResult.error) {
+    throw new Error(`Could not load Marketplace posts from the database: ${postsResult.error.message}`);
   }
   const vendorRecipient = role === 'vendor'
     ? vendorsResult.data?.find((row) => String(row.owner_id) === String(userId))
@@ -145,23 +147,185 @@ export async function loadRemoteState(userId, role) {
       ambiguous, which is why this is not quietly normalised to [] here.
     */
     favorites: favoritesResult.error ? null : mapFavorites(favoritesResult.data),
-    activityLogs: activityLogsResult.data || [],
+    accountReports: (accountReportsResult.data || []).map((report) => ({
+      id: report.id,
+      reporterId: report.reporter_id,
+      accountId: report.account_id,
+      accountType: report.account_type,
+      reason: report.reason,
+      status: report.status,
+      createdAt: report.created_at,
+      resolvedAt: report.resolved_at,
+      resolvedBy: report.resolved_by,
+    })),
     role,
   };
 }
 
-export async function persistShopRating(orderNumber, rating) {
+export async function persistShopRating(orderNumber, rating, comment = '') {
   const client = getSupabaseClient('customer');
   if (!client) throw new Error('Supabase is not configured for this session.');
   const { data, error } = await client.rpc('rate_completed_order', {
     p_order_number: orderNumber,
     p_rating: rating,
+    p_comment: comment,
   });
   if (error) throw new Error(`Could not save your shop rating: ${error.message}`);
   if (!data || !Number.isFinite(Number(data.rating)) || !Number.isFinite(Number(data.rating_count))) {
     throw new Error('The rating was not confirmed by the database. Refresh and check the order before trying again.');
   }
   return data;
+}
+
+export async function getShopRatingComments(vendorId, role = 'customer') {
+  const client = getSupabaseClient(role);
+  if (!client || vendorId == null) return [];
+  const { data, error } = await client.rpc('get_shop_rating_comments', {
+    p_vendor_legacy_id: vendorId,
+  });
+  if (error) throw new Error(`Could not load shop comments: ${error.message}`);
+  return (data || []).map((row) => ({
+    rating: Number(row.rating),
+    comment: row.comment_text || '',
+    createdAt: row.created_at,
+  }));
+}
+
+export async function persistAdminMarketplacePost(post) {
+  if (!Number.isSafeInteger(post?.id)) {
+    throw new Error('This announcement has no valid ID and could not be published.');
+  }
+  const client = getSupabaseClient('admin');
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client
+    .from('posts')
+    .upsert({
+      legacy_id: post.id,
+      author_id: post.authorId,
+      author_name: post.authorName,
+      author_avatar: post.authorAvatar || null,
+      author_role: 'admin',
+      content: post.content,
+      type: post.type || 'announcement',
+      image_url: post.image || null,
+      liked_by: [],
+      comments: [],
+      pinned: Boolean(post.pinned),
+      hidden: false,
+      reported: false,
+      report_reason: null,
+      publish_at: post.publishAt || null,
+      expires_at: post.expiresAt || null,
+    }, { onConflict: 'legacy_id' })
+    .select('legacy_id')
+    .maybeSingle();
+  if (error) throw new Error(`Could not publish the marketplace announcement: ${error.message}`);
+  if (!data) throw new Error('The marketplace announcement was not confirmed by the database.');
+}
+
+export async function reportSupabasePost(postId, reason, role) {
+  const legacyId = Number(postId);
+  if (!Number.isSafeInteger(legacyId)) {
+    throw new Error('This post has no valid database ID, so the report could not be submitted.');
+  }
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('report_marketplace_post', {
+    p_post_id: legacyId,
+    p_reason: reason,
+  });
+  if (error) throw new Error(`Could not submit the post report: ${error.message}`);
+  if (data !== true) throw new Error('The post report was not confirmed by the database.');
+}
+
+export async function reportSupabaseAccount(accountId, accountType, reason, role) {
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('report_account', {
+    p_account_id: accountId,
+    p_account_type: accountType,
+    p_reason: reason,
+  });
+  if (error) throw new Error(`Could not submit the account report: ${error.message}`);
+  if (!data?.id) throw new Error('The account report was not confirmed by the database.');
+  return {
+    id: data.id,
+    reporterId: data.reporter_id,
+    accountId: data.account_id,
+    accountType: data.account_type,
+    reason: data.reason,
+    status: data.status,
+    createdAt: data.created_at,
+    resolvedAt: data.resolved_at,
+    resolvedBy: data.resolved_by,
+  };
+}
+
+export async function resolveSupabaseAccountReport(reportId) {
+  const client = getSupabaseClient('admin');
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('resolve_account_report', {
+    p_report_id: reportId,
+  });
+  if (error) throw new Error(`Could not resolve the account report: ${error.message}`);
+  if (data !== true) throw new Error('The account report was not confirmed as resolved.');
+}
+
+const findOrderVendor = async (client, order) => {
+  const vendors = client.from('vendors').select('id, legacy_id, owner_id');
+  if (order.vendorDbId != null) {
+    return vendors.eq('id', order.vendorDbId).maybeSingle();
+  }
+  if (order.vendorOwnerId) {
+    return vendors.eq('owner_id', order.vendorOwnerId).maybeSingle();
+  }
+
+  const byLegacyId = await client
+    .from('vendors')
+    .select('id, legacy_id, owner_id')
+    .eq('legacy_id', order.vendorId)
+    .maybeSingle();
+  if (byLegacyId.error || byLegacyId.data) return byLegacyId;
+  return client
+    .from('vendors')
+    .select('id, legacy_id, owner_id')
+    .eq('id', order.vendorId)
+    .maybeSingle();
+};
+
+export async function persistMarketplaceComment(postId, content, role) {
+  const legacyId = Number(postId);
+  if (!Number.isSafeInteger(legacyId)) {
+    throw new Error('This post has no valid ID, so the comment could not be saved.');
+  }
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('add_post_comment', {
+    p_post_legacy_id: legacyId,
+    p_content: content,
+  });
+  if (error) throw new Error(`Could not post your comment: ${error.message}`);
+  if (!data || data.id == null) {
+    throw new Error('Your comment was not confirmed by the database. Refresh and try again.');
+  }
+  return data;
+}
+
+export async function deleteMarketplaceComment(postId, commentId, role) {
+  const legacyId = Number(postId);
+  if (!Number.isSafeInteger(legacyId) || commentId == null) {
+    throw new Error('This comment has no valid ID, so it could not be deleted.');
+  }
+  const client = getSupabaseClient(role);
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client.rpc('delete_post_comment', {
+    p_post_legacy_id: legacyId,
+    p_comment_id: String(commentId),
+  });
+  if (error) throw new Error(`Could not delete the comment: ${error.message}`);
+  if (data !== true) {
+    throw new Error('The comment was not deleted. It may have already been removed or you may not have permission.');
+  }
 }
 
 export async function loadRemoteOrders(userId, role) {
@@ -178,6 +342,79 @@ export async function loadRemoteOrders(userId, role) {
     throw new Error(`Could not load orders from the database: ${result.error.message}`);
   }
   return mapOrders(result.data);
+}
+
+export async function persistNewOrder(order, customerId) {
+  const client = getSupabaseClient('customer');
+  if (!client || !customerId) throw new Error('Your database session is unavailable. Sign in again and retry.');
+
+  const vendor = await findOrderVendor(client, order);
+  if (vendor.error) {
+    reportWriteError('select', 'vendors', vendor.error);
+    throw new Error(`Could not prepare order ${order.id}: ${vendor.error.message}`);
+  }
+
+  const values = {
+    order_number: order.id,
+    vendor_legacy_id: order.vendorId,
+    vendor_owner_id: vendor.data?.owner_id || null,
+    customer_id: customerId,
+    customer_name: order.customerName,
+    customer_mobile: order.customerMobile || null,
+    customer_address: order.customerAddress || null,
+    total: order.total,
+    payment_status: order.paymentStatus || null,
+    gcash_ref: order.gcashRef || null,
+    queue_number: order.queueNumber || null,
+    status: order.status,
+    updated_at: order.updatedAt || new Date().toISOString(),
+    reject_reason: order.rejectReason || null,
+    fulfillment: order.fulfillment,
+    payment_method: order.paymentMethod,
+    special_instructions: order.specialInstructions || '',
+    timeline: order.timeline || [],
+  };
+  let savedOrder = await writeTolerant({
+    table: 'orders',
+    values,
+    run: (row) => client.from('orders').insert(row).select('id').single(),
+    onError: (error) => {
+      if (error.code !== '23505') reportWriteError('insert', 'orders', error);
+    },
+  });
+  if (savedOrder.error?.code === '23505') {
+    savedOrder = await client
+      .from('orders')
+      .select('id')
+      .eq('order_number', order.id)
+      .eq('customer_id', customerId)
+      .maybeSingle();
+  }
+  if (savedOrder.error || !savedOrder.data?.id) {
+    const error = savedOrder.error;
+    if (error) reportWriteError('insert', 'orders', error);
+    throw new Error(error
+      ? `Could not save order ${order.id}: ${error.message}`
+      : `Order ${order.id} was not confirmed by the database.`);
+  }
+
+  const items = (order.items || []).map((item) => ({
+    order_id: savedOrder.data.id,
+    menu_legacy_id: item.menuId,
+    name: item.name,
+    price: item.price,
+    quantity: item.quantity,
+    notes: item.notes || '',
+  }));
+  if (items.length) {
+    const { error } = await client.from('order_items').upsert(items, {
+      onConflict: 'order_id,menu_legacy_id,notes',
+    });
+    if (error) {
+      reportWriteError('upsert', 'order_items', error);
+      throw new Error(`Order ${order.id} was saved, but its items could not be saved: ${error.message}`);
+    }
+  }
 }
 
 export async function loadRemoteChats(userId, role) {
@@ -551,11 +788,7 @@ const persistOrders = async (client, state, authUser, profile) => {
     String(item.customerId) === String(profile?.id)
   ));
   for (const order of ordersToPersist) {
-    const vendor = await client
-      .from('vendors')
-      .select('owner_id')
-      .or(`legacy_id.eq.${order.vendorId},id.eq.${order.vendorId}`)
-      .maybeSingle();
+    const vendor = await findOrderVendor(client, order);
     reportWriteError('select', 'vendors', vendor.error);
     const orderValues = {
       order_number: order.id, vendor_legacy_id: order.vendorId,
@@ -684,7 +917,7 @@ const persistPosts = async (client, state, authUser, vendorForPosts) => {
           ? { kind: 'menu', products: post.products }
           : post.product || null,
         image_url: post.image || null,
-        liked_by: post.likedBy || [], comments: post.comments || [],
+        liked_by: post.likedBy || [],
         pinned: !!post.pinned, hidden: !!post.hidden, reported: !!post.reported, report_reason: post.reportReason || null,
         publish_at: post.publishAt || null, expires_at: post.expiresAt || null,
       },
@@ -724,14 +957,124 @@ export async function deleteSupabaseNotification(notificationId, authUser) {
     return { error: null };
   }
   const client = getSupabaseClient();
-  const legacyId = asNumber(notificationId);
-  const { error } = await client
+  const notification = typeof notificationId === 'object' ? notificationId : null;
+  const appId = asNumber(notification?.id ?? notificationId);
+  const legacyId = asNumber(notification?.legacy_id ?? appId);
+  const dbId = asNumber(notification?.dbId);
+  if (!Number.isSafeInteger(appId)) {
+    return { error: new Error('This notification has no valid database ID, so it could not be deleted.') };
+  }
+  let query = client
     .from('notifications')
     .delete()
-    .eq('user_id', authUser.id)
-    .eq('legacy_id', legacyId);
+    .eq('user_id', authUser.id);
+  if (notification?.legacy_id != null) {
+    if (dbId != null) {
+      // Remove a stale pre-migration copy too: older syncs could have inserted
+      // it with a legacy_id equal to this row's primary id.
+      query = query.or(`id.eq.${dbId},legacy_id.eq.${legacyId},id.eq.${legacyId}`);
+    } else {
+      query = query.eq('legacy_id', legacyId);
+    }
+  } else if (dbId != null) {
+    // Older rows can have no legacy_id. Their mapped app id is the table's
+    // primary key, so filtering on legacy_id would leave them in the database
+    // and the next refresh would put the dismissed notification back.
+    query = query.or(`id.eq.${dbId},legacy_id.eq.${appId}`);
+  } else {
+    query = query.eq('legacy_id', appId);
+  }
+  const { error } = await query.select('id');
   if (error) reportWriteError('delete', 'notifications', error);
   return { error };
+}
+
+export async function markSupabaseNotificationRead(notification, authUser) {
+  if (!isSupabaseConfigured || !notification || !authUser?.id) return { error: null };
+  const client = getSupabaseClient();
+  if (!client) return { error: new Error('Supabase is not configured for this session.') };
+
+  const dbId = Number(notification.dbId);
+  const legacyId = Number(notification.legacy_id ?? notification.id);
+  const selectors = [];
+  if (Number.isSafeInteger(dbId)) selectors.push(`id.eq.${dbId}`);
+  if (Number.isSafeInteger(legacyId)) selectors.push(`legacy_id.eq.${legacyId}`);
+  if (selectors.length === 0) {
+    return { error: new Error('This notification has no valid database ID, so it could not be marked read.') };
+  }
+
+  const { data, error } = await client
+    .from('notifications')
+    .update({ read: true })
+    .eq('user_id', authUser.id)
+    .or(selectors.join(','))
+    .select('id');
+  if (error) reportWriteError('update', 'notifications', error);
+  if (!error && !data?.length) {
+    return { error: new Error('The notification was not found for the signed-in account.') };
+  }
+  return { error };
+}
+
+export async function markAllSupabaseNotificationsRead(authUser) {
+  if (!isSupabaseConfigured || !authUser?.id) return { error: null };
+  const client = getSupabaseClient();
+  if (!client) return { error: new Error('Supabase is not configured for this session.') };
+
+  const { error } = await client
+    .from('notifications')
+    .update({ read: true })
+    .eq('user_id', authUser.id)
+    .eq('read', false)
+    .select('id');
+  if (error) reportWriteError('update', 'notifications', error);
+  return { error };
+}
+
+export async function persistAdminPostModeration(post, changes) {
+  if (!isSupabaseConfigured) return;
+  const legacyId = Number(post?.id);
+  if (!Number.isSafeInteger(legacyId)) {
+    throw new Error('This post has no valid database ID, so the moderation change could not be saved.');
+  }
+  const client = getSupabaseClient('admin');
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const values = {};
+  if (typeof changes?.pinned === 'boolean') values.pinned = changes.pinned;
+  if (typeof changes?.hidden === 'boolean') values.hidden = changes.hidden;
+  if (typeof changes?.reported === 'boolean') values.reported = changes.reported;
+  if (Object.hasOwn(changes || {}, 'reportReason')) values.report_reason = changes.reportReason;
+  if (Object.keys(values).length === 0) return;
+  values.updated_at = new Date().toISOString();
+
+  const primaryKey = Number.isSafeInteger(post.dbId) ? 'id' : 'legacy_id';
+  const targetId = primaryKey === 'id' ? post.dbId : legacyId;
+  const { data, error } = await client
+    .from('posts')
+    .update(values)
+    .eq(primaryKey, targetId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error(`Could not save post moderation changes: ${error.message}`);
+  if (!data) throw new Error('The post was not found or you do not have permission to moderate it.');
+}
+
+export async function deleteSupabasePost(postId) {
+  if (!isSupabaseConfigured) return;
+  const legacyId = Number(postId);
+  if (!Number.isSafeInteger(legacyId)) {
+    throw new Error('This post has no valid database ID, so it could not be deleted.');
+  }
+  const client = getSupabaseClient('admin');
+  if (!client) throw new Error('Supabase is not configured for this session.');
+  const { data, error } = await client
+    .from('posts')
+    .delete()
+    .eq('legacy_id', legacyId)
+    .select('legacy_id')
+    .maybeSingle();
+  if (error) throw new Error(`Could not delete the post: ${error.message}`);
+  if (!data) throw new Error('The post was not found or you do not have permission to delete it.');
 }
 
 const deleteMediaFiles = async (client, rootPath = '') => {
@@ -829,7 +1172,7 @@ export async function resetSupabaseData() {
       'orders',
       'order_items',
       'posts',
-      'post_comments',
+      'account_reports',
       'notifications',
       'chats',
       'favorites',
@@ -854,7 +1197,7 @@ export async function resetSupabaseData() {
     await deleteMediaFiles(client);
   } catch (error) {
     throw Object.assign(
-      new Error(`Database records were reset, but uploaded media could not be fully deleted: ${error.message}`),
+      new Error(`Database records were reset, but cleanup could not be verified or completed: ${error.message}`),
       { databaseResetComplete: true }
     );
   }
@@ -874,12 +1217,12 @@ const persistNotifications = async (client, state, authUser) => {
   /*
     Alerts for the admin desk are handled separately, through the RPC.
 
-    They are raised by a customer or vendor -- a new registration, or a lockout
-    after repeated failed logins -- so nobody is signed in as an admin when they
-    are created and there is no admin id to address them to. The row has to be
-    owned by the admin to be visible to the admin screens, and RLS does not let a
-    customer write a row owned by somebody else, so the write happens inside
-    `notify_admin_desk`.
+    They are raised while nobody is signed in as an admin, so there is no admin
+    id to address them to. The row has to be owned by the admin to be visible to
+    the admin screens, and RLS does not let another user write a row owned by
+    somebody else, so the write happens inside `notify_admin_desk`. Failed-login
+    alerts are not sent through this path; the lockout RPC writes those to the
+    targeted account owner's inbox.
 
     The alert's own id is sent as `p_legacy_id` and the function inserts on
     conflict do nothing, so repeats collapse in the database. An earlier version
@@ -957,8 +1300,8 @@ const persistNotifications = async (client, state, authUser) => {
     }
     const createdAt = notification.createdAt || new Date().toISOString();
     const values = {
-      legacy_id: legacyId, user_id: authUser.id, type: notification.type,
-      title: notification.title, message: notification.message, read: !!notification.read,
+      user_id: authUser.id, type: notification.type,
+      title: notification.title, message: notification.message,
       // Written on every upsert so re-saving an alert keeps the moment it was
       // raised instead of moving it to the top of the list on every reload.
       created_at: createdAt,
@@ -974,6 +1317,33 @@ const persistNotifications = async (client, state, authUser) => {
       */
       expires_at: notification.expiresAt || null,
     };
+    if (notification.legacy_id == null && notification.dbId != null) {
+      /*
+        Preserve old rows that predate legacy ids by updating their primary key
+        directly. Treating the mapped database id as a new legacy id inserted a
+        second row on every sync and made dismissed notifications return.
+      */
+      const { data, error } = await writeTolerant({
+        table: 'notifications',
+        values,
+        run: (nextValues) => client
+          .from('notifications')
+          .update(nextValues)
+          .eq('id', asNumber(notification.dbId))
+          .eq('user_id', authUser.id)
+          .select('id')
+          .maybeSingle(),
+        onError: (writeError) => reportWriteError('update', 'notifications', writeError),
+      });
+      if (!error && !data) {
+        reportWriteError('update', 'notifications', {
+          code: 'NO_ROWS',
+          message: `Notification ${notification.id} was not found for the signed-in user.`,
+        });
+      }
+      continue;
+    }
+    values.legacy_id = legacyId;
     await upsertNotification(client, values, (error) => reportWriteError('upsert', 'notifications', error));
   }
 };
@@ -1161,7 +1531,7 @@ const persistFavorites = async (client, state, authUser, canStillWrite, onConfir
 /*
   Re-applies an in-flight vendor logo/cover onto a freshly loaded remote row.
 
-  `loadRemoteState` runs on sign-in and every 15s, and `mergeById` lets the
+  `loadRemoteState` runs on sign-in and on Realtime changes, and `mergeById` lets the
   remote row win. A vendor who uploads a photo gets an instant local preview,
   then the very next tick reads the server -- which does not have the new value
   yet, because the write is debounced by 1.5s and RTT-bound -- and overwrites the

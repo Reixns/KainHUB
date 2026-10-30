@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { CheckCircle, Eye, EyeOff, KeyRound, Lock, Save } from 'lucide-react';
+import { AlertCircle, CheckCircle, Eye, EyeOff, KeyRound, Lock, Save } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Button, Input } from '@/components/UI';
 import { validatePassword } from '@/lib/supabase';
 import PasswordFlowLayout from '@/components/PasswordFlowLayout';
+import PasswordRequirements from '@/components/PasswordRequirements';
+import { findPasswordHistoryEntry, forgetPasswordHistoryEntry } from '@/lib/passwordHistory';
 
 const ROLE_LOGIN_PATH = {
   admin: '/admin/login',
@@ -25,11 +27,27 @@ export default function ResetPassword() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [reusedPassword, setReusedPassword] = useState(false);
+
+  const userEmail = auth?.user?.email;
+  const historyKey = String(userEmail || '').toLowerCase().trim();
 
   const passwordCheck = validatePassword(password, {
-    email: auth?.user?.email,
+    email: userEmail,
     fullName: auth?.user?.fullName || auth?.user?.ownerName,
   });
+
+  useEffect(() => {
+    let active = true;
+    if (!password || !historyKey) {
+      setReusedPassword(false);
+      return () => { active = false; };
+    }
+    findPasswordHistoryEntry(historyKey, password)
+      .then((entry) => { if (active) setReusedPassword(Boolean(entry)); })
+      .catch(() => { if (active) setReusedPassword(false); });
+    return () => { active = false; };
+  }, [password, historyKey]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -46,6 +64,10 @@ export default function ResetPassword() {
       setError('Passwords do not match.');
       return;
     }
+    if (reusedPassword) {
+      setError('You cannot reuse a recently used password. Choose a new one.');
+      return;
+    }
     setLoading(true);
     let result;
     try {
@@ -58,6 +80,7 @@ export default function ResetPassword() {
       setError(result.message);
       return;
     }
+    await forgetPasswordHistoryEntry(historyKey, password);
     // The recovery link proves the mailbox was reached, so this is also the point
     // that clears a failed-login lock. Done before logout because the unlock RPC
     // needs the session. Best effort: a database without the RPC has nothing to
@@ -117,12 +140,15 @@ export default function ResetPassword() {
                   icon={Lock}
                   type={showPassword ? 'text' : 'password'}
                   value={password}
-                  onChange={(event) => { setPassword(event.target.value); setError(''); }}
+                  onChange={(event) => { setPassword(event.target.value); setError(''); setReusedPassword(false); }}
                   autoComplete="new-password"
                   aria-label="New password"
-                  hint={password
-                    ? (passwordCheck.valid ? 'Password meets the security requirements.' : passwordCheck.message)
-                    : 'Use at least 8 characters with uppercase, lowercase, a number, and a symbol.'}
+                  error={reusedPassword ? 'You cannot reuse a recently used password.' : ''}
+                  hint={reusedPassword
+                    ? undefined
+                    : password
+                      ? (passwordCheck.valid ? 'Password meets the security requirements.' : passwordCheck.message)
+                      : 'Use at least 8 characters with uppercase, lowercase, a number, and a symbol.'}
                   endAdornment={(
                     <button
                       type="button"
@@ -163,8 +189,21 @@ export default function ResetPassword() {
                   className="border-white/15 placeholder:text-white/35"
                   style={{ backgroundColor: '#101014', color: '#fff' }}
                 />
+                {password && hasRecoverySession && (
+                  <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
+                    <PasswordRequirements
+                      password={password}
+                      email={userEmail}
+                      fullName={auth?.user?.fullName || auth?.user?.ownerName}
+                      theme="dark"
+                      extraRequirements={[
+                        { id: 'not-reused', label: "Can't reuse a recently used password", valid: !reusedPassword },
+                      ]}
+                    />
+                  </div>
+                )}
                 {error && <div role="alert" className="bg-danger/10 border border-danger/30 text-red-300 text-sm rounded-xl px-3 py-2">{error}</div>}
-                <Button type="submit" className="w-full" size="lg" loading={loading} disabled={loading}>
+                <Button type="submit" className="w-full" size="lg" loading={loading} disabled={loading || reusedPassword}>
                   <Save className="w-4 h-4" /> Update Password
                 </Button>
               </form>

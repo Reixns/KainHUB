@@ -19,14 +19,20 @@ export const asNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : value;
 };
 
+export const normalizeStoreStatus = (status) => {
+  const normalized = String(status || '').trim().toUpperCase();
+  return ['OPEN', 'BUSY', 'CLOSED'].includes(normalized) ? normalized : 'CLOSED';
+};
+
 export const mapVendors = (rows) => (rows || []).map((v) => ({
   ...v,
   id: asNumber(v.legacy_id || v.id),
+  dbId: asNumber(v.id),
   rating: Number.isFinite(Number(v.rating)) ? Number(v.rating) : 0,
   ratingCount: Number.isFinite(Number(v.rating_count)) ? Number(v.rating_count) : 0,
   ownerId: v.owner_id,
   ownerName: v.owner_name,
-  storeStatus: v.store_status,
+  storeStatus: normalizeStoreStatus(v.store_status),
   deliveryAvailable: v.delivery_available,
   coverImage: v.cover_image,
   menu: (v.menu_items || []).map((m) => ({
@@ -46,6 +52,7 @@ export const mapPosts = (rows) => (rows || []).map((p) => {
   return {
     ...p,
     id: asNumber(p.legacy_id || p.id),
+    dbId: asNumber(p.id),
     authorId: p.author_id,
     authorRole: p.author_role,
     authorName: p.author_name,
@@ -92,7 +99,7 @@ export const mapOrders = (rows) => (rows || []).map((o) => ({
 }));
 
 export const mapNotifications = (rows) => (rows || []).map((n) => ({
-  ...n, id: asNumber(n.legacy_id || n.id), userId: n.user_id, createdAt: n.created_at,
+  ...n, id: asNumber(n.legacy_id ?? n.id), dbId: asNumber(n.id), userId: n.user_id, createdAt: n.created_at,
   // Restores the TTL on the way back. Null for promo and admin-desk rows, which
   // `isNotificationExpired` correctly reads as "no expiry".
   expiresAt: n.expires_at ?? null,
@@ -122,6 +129,7 @@ export const mapShopRatings = (rows) => (rows || []).map((rating) => ({
   orderNumber: rating.order_number,
   vendorId: asNumber(rating.vendor_legacy_id),
   rating: Number(rating.rating),
+  comment: rating.comment_text || '',
   createdAt: rating.created_at,
 }));
 

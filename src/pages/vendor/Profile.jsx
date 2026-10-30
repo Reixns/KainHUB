@@ -2,14 +2,21 @@ import { useState } from 'react';
 import { User, Mail, Phone, MapPin, Save, Store, LogOut } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input } from '@/components/UI';
+import OrderQueueBoard, { ACTIVE_ORDER_STATUSES } from '@/components/OrderQueueBoard';
+import ShopComments from '@/components/ShopComments';
 import { InfoRow, MediaButton, LogoAvatar } from '@/components/ProfileParts';
 import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import { useNavigate } from 'react-router-dom';
+import { FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 export default function VendorProfile() {
-  const { auth, updateProfile, uploadMediaFile, showToast, logout } = useApp();
+  const { auth, orders, shopRatings, updateProfile, uploadMediaFile, showToast, logout } = useApp();
   const navigate = useNavigate();
   const user = auth.user;
+  const vendorIds = [user.id, user.ownerId].filter(Boolean).map(String);
+  const activeOrders = orders.filter((order) => (
+    vendorIds.includes(String(order.vendorId)) && ACTIVE_ORDER_STATUSES.includes(order.status)
+  ));
   const [editing, setEditing] = useState(false);
   const [uploading, setUploading] = useState('');
   const [form, setForm] = useState({
@@ -60,6 +67,22 @@ export default function VendorProfile() {
         </div>
       </Card>
 
+      <OrderQueueBoard
+        orders={activeOrders}
+        showCustomerNames
+        subtitle="Customer numbers and order statuses, like a shop queue board."
+        emptyMessage="No active orders right now."
+      />
+
+      <ShopComments
+        vendorId={user.id}
+        role="vendor"
+        localRatings={shopRatings}
+        rating={user.rating}
+        ratingCount={user.ratingCount}
+        title="Customer feedback"
+      />
+
       <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-ink">Shop Information</h3>
@@ -69,11 +92,11 @@ export default function VendorProfile() {
         </div>
         {editing ? (
           <div className="space-y-3">
-            <Input label="Shop Name" icon={Store} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <Input label="Owner Name" icon={User} value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} />
+            <Input label="Shop Name" icon={Store} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={FIELD_CHAR_LIMITS.shopName} />
+            <Input label="Owner Name" icon={User} value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} maxLength={FIELD_CHAR_LIMITS.ownerName} />
             <Input label="Mobile" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: sanitizeMobile(e.target.value) })} />
             <Input label="Email" icon={Mail} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+            <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} maxLength={FIELD_CHAR_LIMITS.address} />
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setEditing(false)}>Cancel</Button>
               <Button className="flex-1" onClick={handleSave}><Save className="w-4 h-4" /> Save</Button>
@@ -96,4 +119,3 @@ export default function VendorProfile() {
     </div>
   );
 }
-

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Eye, Check, X, ChefHat, Package, Truck } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Badge, Button, StatusBadge, formatPeso, Tabs, formatDateTime, EmptyState, Modal, Textarea, formatQueue, LogoMark } from '@/components/UI';
+import { FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 export default function VendorOrders() {
   const { auth, orders, updateOrderStatus, rejectOrder, savingOrderIds } = useApp();
@@ -166,7 +167,7 @@ export default function VendorOrders() {
         }
       >
         <p className="text-sm text-body mb-3">Please provide a reason for rejecting this order.</p>
-        <Textarea rows={3} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="E.g. Item out of stock" />
+        <Textarea rows={3} maxCharacters={FIELD_CHAR_LIMITS.rejectionReason} maxLength={FIELD_CHAR_LIMITS.rejectionReason} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="E.g. Item out of stock" />
       </Modal>
     </div>
   );

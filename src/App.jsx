@@ -2,7 +2,6 @@ import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { AppProvider } from '@/context/AppContext';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import SessionSkeleton from '@/components/SessionSkeleton';
 
 // Layouts
 import CustomerLayout from '@/layouts/CustomerLayout';
@@ -26,8 +25,10 @@ const CustomerCheckout = lazy(() => import('@/pages/customer/Checkout'));
 const CustomerOrders = lazy(() => import('@/pages/customer/Orders'));
 const CustomerOrderDetail = lazy(() => import('@/pages/customer/OrderDetail'));
 const CustomerProfile = lazy(() => import('@/pages/customer/Profile'));
+const CustomerSettings = lazy(() => import('@/pages/customer/Settings'));
 const CustomerNotifications = lazy(() => import('@/pages/customer/Notifications'));
 const CustomerPublicProfile = lazy(() => import('@/pages/customer/PublicProfile'));
+const PublicProfileRedirect = lazy(() => import('@/pages/customer/PublicProfile').then((module) => ({ default: module.PublicProfileRedirect })));
 
 const VendorLogin = lazy(() => import('@/pages/vendor/Login'));
 const VendorRegister = lazy(() => import('@/pages/vendor/Register'));
@@ -54,7 +55,7 @@ const AdminMarketplace = lazy(() => import('@/pages/admin/Marketplace'));
 const AdminReports = lazy(() => import('@/pages/admin/Reports'));
 const AdminAnnouncements = lazy(() => import('@/pages/admin/Notifications'));
 const AdminAnalytics = lazy(() => import('@/pages/admin/Analytics'));
-const AdminAuditLogs = lazy(() => import('@/pages/admin/AuditLogs'));
+
 const AdminSettings = lazy(() => import('@/pages/admin/Settings'));
 const AdminProfile = lazy(() => import('@/pages/admin/Profile'));
 
@@ -84,6 +85,25 @@ function NotFound() {
   );
 }
 
+function PageLoading() {
+  return (
+    <main
+      className="flex min-h-[100dvh] items-center justify-center bg-[#101014] px-4 text-white"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="flex flex-col items-center text-center">
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-violet-300/20 bg-violet-400/10">
+          <span className="h-7 w-7 animate-spin rounded-full border-2 border-violet-300/30 border-t-violet-300" aria-hidden="true" />
+        </span>
+        <p className="mt-4 text-sm font-semibold">Loading KainHUB</p>
+        <p className="mt-1 text-xs text-white/55">Getting things ready…</p>
+      </div>
+    </main>
+  );
+}
+
 /*
  * Resets scroll on every navigation. Without it, going Shop -> Shop detail ->
  * back left the page scrolled to where you had been, so the new view opened
@@ -108,6 +128,7 @@ const TITLES = {
   '/customer/orders': 'Orders · KainHUB',
   '/customer/messages': 'Messages · KainHUB',
   '/customer/profile': 'Profile · KainHUB',
+  '/customer/settings': 'Settings · KainHUB',
   '/customer/notifications': 'Notifications · KainHUB',
   '/vendor/login': 'Vendor sign in · KainHUB',
   '/vendor/register': 'Register your shop · KainHUB',
@@ -134,7 +155,7 @@ const TITLES = {
   '/admin/reports': 'Reports · KainHUB',
   '/admin/notifications': 'Notifications · KainHUB',
   '/admin/analytics': 'Analytics · KainHUB',
-  '/admin/audit-logs': 'Audit logs · KainHUB',
+
   '/admin/settings': 'Settings · KainHUB',
   '/admin/profile': 'Profile · KainHUB',
   '/unauthorized': 'Unauthorized · KainHUB',
@@ -173,13 +194,13 @@ export default function App() {
     <AppProvider>
       <BrowserRouter>
         <RouteEffects />
-        <Suspense fallback={<SessionSkeleton />}>
+        <Suspense fallback={<PageLoading />}>
           <Routes>
           {/* Landing / Portal Selector */}
           <Route path="/" element={<Landing />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/profiles/:profileType/:profileId" element={<CustomerPublicProfile />} />
+          <Route path="/profiles/:profileType/:profileId" element={<PublicProfileRedirect />} />
 
           {/* ===== CUSTOMER APP ===== */}
           <Route path="/customer/login" element={<CustomerLogin />} />
@@ -198,6 +219,7 @@ export default function App() {
             <Route path="orders" element={<CustomerOrders />} />
             <Route path="orders/:orderId" element={<CustomerOrderDetail />} />
             <Route path="profile" element={<CustomerProfile />} />
+            <Route path="settings" element={<CustomerSettings />} />
             <Route path="messages" element={<Chat />} />
             <Route path="profile/:profileType/:profileId" element={<CustomerPublicProfile />} />
             <Route path="notifications" element={<CustomerNotifications />} />
@@ -220,6 +242,7 @@ export default function App() {
             <Route path="analytics" element={<VendorAnalytics />} />
             <Route path="settings" element={<VendorSettings />} />
             <Route path="profile" element={<VendorProfile />} />
+            <Route path="profile/:profileType/:profileId" element={<CustomerPublicProfile />} />
             <Route path="notifications" element={<VendorNotifications />} />
           </Route>
 
@@ -239,9 +262,10 @@ export default function App() {
             <Route path="reports" element={<AdminReports />} />
             <Route path="notifications" element={<AdminAnnouncements />} />
             <Route path="analytics" element={<AdminAnalytics />} />
-            <Route path="audit-logs" element={<AdminAuditLogs />} />
+
             <Route path="settings" element={<AdminSettings />} />
             <Route path="profile" element={<AdminProfile />} />
+            <Route path="profile/:profileType/:profileId" element={<CustomerPublicProfile />} />
           </Route>
 
           <Route path="/unauthorized" element={<Unauthorized />} />

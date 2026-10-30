@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Search, Eye, CheckCircle, XCircle, Ban, Play, ChevronRight, Store, Trash2 } from 'lucide-react';
+import { Search, Eye, UserRound, CheckCircle, XCircle, Ban, Play, ChevronRight, Store, Trash2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, Badge, StatusBadge, Tabs, EmptyState, formatPeso, formatDateTime, Modal, LogoMark, formatQueue } from '@/components/UI';
 
@@ -98,6 +98,7 @@ export default function AdminVendors() {
                   </div>
                   <div className="flex gap-2 flex-wrap">
                     <Button as={Link} to={`/admin/vendors/${v.id}`} size="sm" variant="outline"><Eye className="w-4 h-4" /> View</Button>
+                    <Button as={Link} to={`/admin/profile/vendor/${v.id}`} size="sm" variant="ghost"><UserRound className="w-4 h-4" /> Profile</Button>
                     {v.status === 'pending' && (
                       <>
                         <Button size="sm" variant="success" onClick={() => { setActionVendor(v); setActionType('approve'); }}>
@@ -205,6 +206,9 @@ export function AdminVendorDetail() {
           </div>
         </div>
         <div className="mt-4 flex gap-2 flex-wrap">
+          <Button as={Link} to={`/admin/profile/vendor/${vendor.id}`} variant="outline">
+            <UserRound className="w-4 h-4" /> View profile
+          </Button>
           {vendor.status === 'pending' && (
             <>
               <Button variant="success" onClick={() => approveVendor(vendor.id)}><CheckCircle className="w-4 h-4" /> Approve</Button>

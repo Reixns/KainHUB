@@ -1,14 +1,78 @@
 import { useState, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Star, Minus, Plus, ShoppingCart, MessageSquare } from 'lucide-react';
+import { ArrowLeft, Clock3, Star, Minus, Plus, ShoppingCart, MessageSquare, MapPin } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Card, Badge, Button, formatPeso, Textarea, StatusBadge, getProductImage, LogoMark, MediaImage } from '@/components/UI';
+import ProductCard from '@/components/ProductCard';
+import { Card, Button, Textarea, MediaImage, isImageSource } from '@/components/UI';
+import OrderQueueBoard, { ACTIVE_ORDER_STATUSES } from '@/components/OrderQueueBoard';
 import FavoriteButton from '@/components/FavoriteButton';
+import ShopComments from '@/components/ShopComments';
+import AccountReportButton from '@/components/AccountReportButton';
+import { FIELD_CHAR_LIMITS, characterLimitMessage, isWithinCharacterLimit } from '@/lib/textLimits';
+
+function ShopProfileHeader({ shop }) {
+  const image = isImageSource(shop.coverImage)
+    ? shop.coverImage
+    : isImageSource(shop.logo)
+      ? shop.logo
+      : '';
+  const fallback = (
+    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-violet-950 via-[#28223a] to-[#19171f]">
+      <span className="flex h-20 w-20 items-center justify-center rounded-2xl border border-white/15 bg-white/[0.08] text-4xl font-bold text-white/80 shadow-float">
+        {shop.logo && !isImageSource(shop.logo) ? shop.logo : shop.name.trim().charAt(0).toUpperCase()}
+      </span>
+    </div>
+  );
+
+  return (
+    <section className="relative mt-2 min-h-[15rem] overflow-hidden rounded-2xl border border-white/10 bg-[#1c1922] sm:min-h-[19rem]">
+      <MediaImage
+        src={image}
+        alt=""
+        className="absolute inset-0 h-full w-full object-cover"
+        fallback={fallback}
+        eager
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-black/10" />
+      <div className="absolute inset-x-0 bottom-0 p-4 sm:p-7">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-white/65">
+          {shop.category || 'Local kitchen'}
+        </p>
+        <h1 className="mt-1 break-words text-2xl font-extrabold leading-tight tracking-tight text-white sm:text-4xl">
+          {shop.name}
+        </h1>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-medium text-white/75 sm:text-sm">
+          <span className={`inline-flex items-center gap-1.5 ${
+            shop.storeStatus === 'OPEN' ? 'text-emerald-300' : shop.storeStatus === 'BUSY' ? 'text-amber-200' : 'text-white/65'
+          }`}>
+            <span className={`h-2 w-2 rounded-full ${
+              shop.storeStatus === 'OPEN' ? 'bg-emerald-400' : shop.storeStatus === 'BUSY' ? 'bg-amber-300' : 'bg-white/45'
+            }`} />
+            {shop.storeStatus === 'OPEN' ? 'Open now' : shop.storeStatus === 'BUSY' ? 'Busy' : 'Closed'}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Star className="h-3.5 w-3.5 fill-amber-300 text-amber-300" aria-hidden="true" />
+            {Number(shop.rating || 0).toFixed(1)}
+            {Number(shop.ratingCount) > 0 && <span>({shop.ratingCount} ratings)</span>}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
+            ~{Math.max(5, (Number(shop.queue) || 0) * 5)} min
+          </span>
+          <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+            <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">{shop.address || 'Location not set'}</span>
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export default function CustomerShopDetail() {
   const { shopId } = useParams();
   const navigate = useNavigate();
-  const { vendors, addToCart, cart } = useApp();
+  const { auth, vendors, orders, addToCart, cart, showToast, shopRatings } = useApp();
   const shop = vendors.find((v) => String(v.id) === String(shopId));
   const [activeCategory, setActiveCategory] = useState('all');
   const [qtys, setQtys] = useState({});
@@ -40,6 +104,11 @@ export default function CustomerShopDetail() {
   const estWait = Math.max(5, shop.queue * 5);
   const cartForShop = cart.filter((c) => c.vendorId === shop.id);
   const cartCount = cartForShop.reduce((s, i) => s + i.quantity, 0);
+  const shopOrders = orders.filter((order) => String(order.vendorId) === String(shop.id));
+  const activeShopOrders = shopOrders.filter((order) => ACTIVE_ORDER_STATUSES.includes(order.status));
+  const myActiveOrderIds = activeShopOrders
+    .filter((order) => String(order.customerId) === String(auth.user?.id))
+    .map((order) => order.id);
 
   const handleQty = (id, delta) => {
     setQtys((prev) => ({ ...prev, [id]: Math.max(1, (prev[id] || 1) + delta) }));
@@ -50,6 +119,11 @@ export default function CustomerShopDetail() {
     setAddingItem(item.id);
     const qty = qtys[item.id] || 1;
     const note = notes[item.id] || '';
+    if (!isWithinCharacterLimit(note, FIELD_CHAR_LIMITS.itemNote)) {
+      showToast(characterLimitMessage(FIELD_CHAR_LIMITS.itemNote), 'error');
+      setAddingItem(null);
+      return;
+    }
     setTimeout(() => {
       addToCart(shop, item, qty, note);
       setQtys((prev) => ({ ...prev, [item.id]: 1 }));
@@ -63,7 +137,7 @@ export default function CustomerShopDetail() {
   // -- otherwise the last ~34px of content stayed hidden behind the bar on a phone
   // with a home indicator even though the bar itself had moved up.
   return (
-    <div className="pb-[calc(10rem+env(safe-area-inset-bottom))]">
+    <div className="mx-auto w-full max-w-5xl pb-[calc(10rem+env(safe-area-inset-bottom))]">
       {/*
         The cover hero is gone. It existed to be a backdrop for an overlaid shop
         name, but the identity block below already carries the logo and name on
@@ -71,81 +145,81 @@ export default function CustomerShopDetail() {
         top of every shop page. The controls that lived on the scrim move into a
         plain bar so nothing is lost with it.
       */}
-      <div className="flex items-center justify-between gap-2 px-4 pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <Link
           to="/customer/shops"
-          aria-label="Back to all shops"
-          className="tap-target rounded-full bg-white border border-hairline text-ink hover:bg-surface-hover"
+          className="inline-flex min-h-10 items-center gap-2 rounded-xl px-2 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.06] hover:text-white"
         >
-          <ArrowLeft className="w-5 h-5" />
+          <ArrowLeft className="h-4 w-4" />
+          All shops
         </Link>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <AccountReportButton
+            accountId={shop.ownerId || shop.id}
+            accountType="vendor"
+            accountName={shop.name}
+          />
           <FavoriteButton type="shop" refId={shop.id} label={shop.name} />
-          <StatusBadge status={shop.storeStatus} />
         </div>
       </div>
 
-      {/* Shop identity, now the top of the page and the only image on it. The logo
-          goes to `xl`: with the cover gone there is nothing competing for the
-          top of the page, and at `md` it read as an avatar beside a title rather
-          than as the shop's face. */}
-      <div className="px-4 pt-4">
-        <Card className="p-4">
-          <div className="flex items-start gap-3">
-            <LogoMark name={shop.name} logo={shop.logo} size="xl" />
-            <div className="min-w-0 flex-1">
-              <h1 className="text-xl font-bold text-ink tracking-tight leading-snug">{shop.name}</h1>
-              <div className="flex items-center gap-2 mt-1 text-sm text-muted flex-wrap">
-                <span className="truncate">{shop.category}</span>
-                <span aria-hidden="true" className="text-hairline-strong">&middot;</span>
-                <span className="flex items-center gap-1">
-                  <Star className="w-3.5 h-3.5 text-rating fill-rating" aria-hidden="true" />
-                  <span className="font-medium text-body">{Number(shop.rating || 0).toFixed(1)}</span>
-                  <span className="text-xs text-muted">
-                    {Number(shop.ratingCount) > 0
-                      ? `(${shop.ratingCount} ${shop.ratingCount === 1 ? 'rating' : 'ratings'})`
-                      : '(no ratings yet)'}
-                  </span>
-                </span>
-              </div>
-            </div>
+      <ShopProfileHeader shop={shop} />
+
+      <Card className="mt-3 p-4 sm:p-5">
+        {shop.description && <p className="text-sm leading-6 text-white/70">{shop.description}</p>}
+        <div className="mt-3 flex items-start gap-2 text-sm text-white/60">
+          <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" aria-hidden="true" />
+          <span className="break-words">{shop.address || 'Location not set'}</span>
+        </div>
+        <dl className="mt-4 grid grid-cols-3 gap-3 border-t border-white/10 pt-4 text-sm">
+          <div>
+            <dt className="text-xs text-white/45">In queue</dt>
+            <dd className="mt-1 text-lg font-bold tabular-nums text-white">{Number(shop.queue) || 0}</dd>
           </div>
+          <div>
+            <dt className="text-xs text-white/45">Est. wait</dt>
+            <dd className="mt-1 text-lg font-bold tabular-nums text-white">{estWait} min</dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="text-xs text-white/45">Hours</dt>
+            <dd className="mt-1 truncate font-semibold text-white">{shop.operatingHours || 'Not set'}</dd>
+          </div>
+        </dl>
+        <Button variant="outline" className="mt-4 w-full border-white/15 text-white hover:bg-white/[0.07]" onClick={() => navigate(`/customer/messages?vendorId=${shop.id}`)}>
+          <MessageSquare className="h-4 w-4" /> Message seller
+        </Button>
+      </Card>
 
-          {shop.description && (
-            <p className="text-sm text-body mt-3">{shop.description}</p>
-          )}
+      {activeShopOrders.length > 0 && (
+        <div className="mt-4">
+          <OrderQueueBoard
+            orders={activeShopOrders}
+            highlightOrderIds={myActiveOrderIds}
+            subtitle="See which customer numbers are preparing and ready."
+            emptyMessage="No active orders right now."
+          />
+        </div>
+      )}
 
-          {/* Queue facts: the two numbers a customer checks before ordering.
-              Left-aligned in a hairline-divided row rather than centred. */}
-          <dl className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-hairline text-sm">
-            <div>
-              <dt className="text-xs text-muted">In queue</dt>
-              <dd className="font-semibold text-ink text-lg tabular-nums mt-0.5">{shop.queue}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted">Est. wait</dt>
-              <dd className="font-semibold text-ink text-lg tabular-nums mt-0.5">{estWait}m</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted">Hours</dt>
-              <dd className="font-medium text-ink mt-1 truncate">{shop.operatingHours}</dd>
-            </div>
-          </dl>
-
-          <Button variant="outline" className="w-full mt-4" onClick={() => navigate(`/customer/messages?vendorId=${shop.id}`)}>
-            <MessageSquare className="w-4 h-4" /> Message seller
-          </Button>
-        </Card>
+      <div className="mt-6">
+        <ShopComments
+          vendorId={shop.id}
+          role="customer"
+          localRatings={shopRatings}
+          rating={shop.rating}
+          ratingCount={shop.ratingCount}
+          hideWhenEmpty
+        />
       </div>
 
       {/* Menu */}
-      <div className="px-4 mt-6">
+      <div className="mt-6">
         <h2 className="font-bold text-ink mb-3">Menu</h2>
         {(shop.menu || []).length === 0 ? (
           <Card className="p-8 text-center text-muted text-sm">No menu items yet.</Card>
         ) : (
           <>
-            <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1 mb-4 -mx-4 px-4">
+            <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1 mb-4 -mx-3 px-3 sm:-mx-4 sm:px-4 lg:mx-0 lg:px-0">
               {shopMenuCategories.map((c) => (
                 <button
                   key={c.id}
@@ -163,57 +237,35 @@ export default function CustomerShopDetail() {
               ))}
             </div>
 
-            <div className="-mx-4 overflow-x-auto px-4 pb-3 scrollbar-hide">
+            <div className="-mx-3 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-4 sm:px-4 lg:mx-0 lg:px-0">
               <div className="flex w-max gap-4">
                 {filteredMenu.map((item) => {
                   const qty = qtys[item.id] || 1;
-                  const photo = getProductImage(item.image);
-                  const soldOut = !item.available || item.stock === 0;
+                  const soldOut = !item.available
+                    || (item.stock != null && item.stock !== '' && Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0);
+                  const badge = soldOut
+                    ? 'Unavailable'
+                    : Number(item.stock) > 0 && Number(item.stock) < 6
+                      ? `${item.stock} left`
+                      : null;
                   return (
-                    <Card key={item.id} className="group flex w-[11.5rem] shrink-0 flex-col overflow-hidden border-white/10 transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-violet-300/40 sm:w-52">
-                      <div className="relative aspect-[4/5] overflow-hidden bg-surface-hover">
-                        <MediaImage
-                          src={photo}
-                          alt={item.name}
-                          className={`absolute inset-0 block h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${soldOut ? 'opacity-45 grayscale' : ''}`}
-                          fallback={(
-                            <div className={`absolute inset-0 flex h-full w-full items-center justify-center text-4xl ${soldOut ? 'opacity-50' : ''}`} aria-hidden="true">
-                              {item.image && item.image.length <= 4 ? item.image : '🍽️'}
-                            </div>
-                          )}
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/15 to-black/5" />
-                        <span className="absolute right-1.5 top-1.5">
-                          <FavoriteButton type="product" refId={item.id} vendorId={shop.id} label={item.name} className="!h-9 !min-h-9 !w-9 !min-w-9" />
-                        </span>
-                        {soldOut ? (
-                          <span className="absolute left-2.5 top-2.5 rounded-full bg-red-500/90 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
-                            Sold out
-                          </span>
-                        ) : item.stock > 0 && item.stock < 6 ? (
-                          <span className="absolute left-2.5 top-2.5 rounded-full bg-violet-500/90 px-2.5 py-1 text-[10px] font-bold text-white">
-                            {item.stock} left
-                          </span>
-                        ) : null}
-                        <div className="absolute inset-x-0 bottom-0 p-3">
-                          <h3 className="line-clamp-2 min-h-10 text-sm font-bold leading-tight text-white sm:text-base">{item.name}</h3>
-                          <p className="mt-1 line-clamp-1 text-xs text-white/60">
-                            {item.category || item.description || <span aria-hidden="true">&nbsp;</span>}
-                          </p>
-                          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-white/20 pt-2">
-                            <span className="text-sm font-bold tabular-nums text-white sm:text-base">{formatPeso(item.price)}</span>
-                            {!soldOut && !isOpen && <span className="text-[10px] font-medium text-white/65">Shop closed</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      {!soldOut && isOpen && (
-                        <div className="space-y-2 p-3">
+                    <ProductCard
+                      key={item.id}
+                      product={item}
+                      shop={shop}
+                      meta={item.category || item.description}
+                      badge={!isOpen ? 'Shop closed' : badge}
+                      dimmed={soldOut || !isOpen}
+                    >
+                      {!soldOut && isOpen ? (
+                        <div className="space-y-2">
                           <Textarea
                             placeholder="Add a note (optional)"
                             aria-label={`Note for ${item.name}`}
                             value={notes[item.id] || ''}
                             onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                            maxCharacters={FIELD_CHAR_LIMITS.itemNote}
+                            maxLength={FIELD_CHAR_LIMITS.itemNote}
                             rows={1}
                             className="text-sm"
                           />
@@ -229,12 +281,16 @@ export default function CustomerShopDetail() {
                             </div>
                             <Button className="min-w-0 flex-1 !px-3" aria-label={`Add ${item.name} to cart`} onClick={() => handleAdd(item)} loading={addingItem === item.id}>
                               <ShoppingCart className="h-4 w-4" aria-hidden="true" />
-                              Add
+                              Add to cart
                             </Button>
                           </div>
                         </div>
+                      ) : (
+                        <Button variant="secondary" size="sm" full disabled>
+                          Unavailable
+                        </Button>
                       )}
-                    </Card>
+                    </ProductCard>
                   );
                 })}
               </div>
@@ -253,7 +309,7 @@ export default function CustomerShopDetail() {
           inset as well as the nav keeps it stacked on top of the nav everywhere.
       */}
       {cartCount > 0 && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] left-0 right-0 px-4 z-30 max-w-4xl mx-auto">
+        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] left-0 right-0 z-30 mx-auto max-w-5xl px-3 sm:px-4 lg:px-8">
           <Link
             to="/customer/cart"
             className="w-full bg-brand hover:bg-brand-strong text-white rounded-control px-4 py-3 min-h-12 flex items-center justify-between shadow-brand font-semibold"

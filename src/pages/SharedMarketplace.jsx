@@ -1,10 +1,10 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Heart, MessageCircle, Flag, Pin, EyeOff, Trash2, Send, Shield, CheckCircle2, ImagePlus, X, MoreVertical, AlertTriangle, Megaphone, AlertCircle, Tag, Calendar, Truck as TruckIcon, Settings2, Share2 } from 'lucide-react';
+import { Heart, MessageCircle, Flag, Pin, EyeOff, Trash2, Send, Shield, CheckCircle2, ImagePlus, X, MoreVertical, AlertTriangle, Megaphone, AlertCircle, Tag, Calendar, Truck as TruckIcon, Settings2, Share2, Users, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Textarea, Avatar, Modal, Badge, EmptyState, ConfirmDialog, getProductImage, isImageSource, timeAgo, formatPeso, MediaImage } from '@/components/UI';
 import FavoriteButton from '@/components/FavoriteButton';
-import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
+import { isWithinMessageLimits, MAX_TEXT_LENGTH, messageLimitMessage } from '@/lib/textLimits';
 
 const POST_TYPES = {
   customer: [
@@ -33,138 +33,242 @@ export default function SharedMarketplace({ viewMode = 'feed' }) {
   const [filter, setFilter] = useState('all');
   const [reportPostId, setReportPostId] = useState(null);
   const [reportReason, setReportReason] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const role = auth.role;
   const canCreate = !!auth.user;
   const currentTime = Date.now();
+  const activeSelectedPost = selectedPost
+    ? posts.find((post) => String(post.id) === String(selectedPost.id)) || selectedPost
+    : null;
 
-  const visiblePosts = posts
-    .filter((p) => !p.hidden || role === 'admin')
-    .filter((p) => !p.publishAt || new Date(p.publishAt).getTime() <= currentTime)
-    .filter((p) => !p.expiresAt || new Date(p.expiresAt).getTime() > currentTime)
-    .filter((p) => {
-      if (viewMode === 'vendor' && role === 'vendor') {
-        return true;
-      }
-      if (filter === 'all') return true;
-      return p.authorRole === filter;
-    })
+  const eligiblePosts = useMemo(() => posts
+    .filter((post) => !post.hidden || role === 'admin')
+    .filter((post) => (role === 'admin' && post.pinned) || !post.publishAt || new Date(post.publishAt).getTime() <= currentTime)
+    .filter((post) => (role === 'admin' && post.pinned) || !post.expiresAt || new Date(post.expiresAt).getTime() > currentTime)
     .sort((a, b) => {
       if (a.pinned && !b.pinned) return -1;
       if (!a.pinned && b.pinned) return 1;
       return new Date(b.createdAt) - new Date(a.createdAt);
-    });
+    }), [posts, role, currentTime]);
+  const visiblePosts = useMemo(() => eligiblePosts.filter((post) => (
+    (viewMode === 'vendor' && role === 'vendor') || filter === 'all' || post.authorRole === filter
+  )), [eligiblePosts, filter, role, viewMode]);
 
   // Live counts so a filter chip never leads to an empty result.
   const filterCounts = useMemo(() => {
-    const visible = posts.filter((p) => !p.hidden || role === 'admin');
-    const counts = { all: visible.length, admin: 0, vendor: 0, customer: 0 };
-    visible.forEach((p) => { if (counts[p.authorRole] !== undefined) counts[p.authorRole] += 1; });
+    const counts = { all: eligiblePosts.length, admin: 0, vendor: 0, customer: 0 };
+    eligiblePosts.forEach((post) => { if (counts[post.authorRole] !== undefined) counts[post.authorRole] += 1; });
     return counts;
-  }, [posts, role]);
+  }, [eligiblePosts]);
+  const reportCount = posts.filter((post) => post.reported).length;
+  const myPostCount = posts.filter((post) => String(post.authorId) === String(auth.user?.id)).length;
+  const vendorCount = new Set(posts.filter((post) => post.authorRole === 'vendor').map((post) => post.authorId)).size;
+
+  const submitPostReport = async () => {
+    if (!reportPostId || !reportReason || reportSubmitting) return;
+    setReportSubmitting(true);
+    try {
+      const submitted = await reportPost(reportPostId, reportReason);
+      if (submitted) {
+        setReportPostId(null);
+        setReportReason('');
+      }
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
 
   return (
-    <div className="pb-24">
-      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 mb-5">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-ink">Marketplace</h1>
-          <p className="text-sm text-muted mt-1">Updates and announcements from your neighbourhood.</p>
-        </div>
-        {canCreate && (
-          <div className="flex flex-wrap gap-2">
-            {role === 'vendor' && viewMode === 'vendor' && auth.user?.menu?.length > 0 && (
-              <Button size="sm" variant="outline" onClick={() => setConfirmShareMenu(true)}>
-                <Share2 className="w-4 h-4" /> Share full menu
+    <div className="mx-auto w-full max-w-7xl">
+      <section className="mb-6 overflow-hidden rounded-2xl border border-white/10 bg-[#18151f] text-white shadow-raised">
+        <div className="flex flex-wrap items-center justify-between gap-5 p-5 sm:p-7">
+          <div className="min-w-0">
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-white/75">
+              <Sparkles className="h-3.5 w-3.5 text-violet-300" aria-hidden="true" />
+              {role === 'admin' ? 'Official community space' : 'KainHUB community'}
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+              {viewMode === 'vendor' && role === 'vendor' ? 'Your Marketplace' : 'Marketplace'}
+            </h1>
+            <p className="mt-1.5 max-w-xl text-sm leading-6 text-white/65">
+              {role === 'admin'
+                ? 'Share announcements and keep the community feed helpful and up to date.'
+                : 'Discover local updates, offers, and stories from your neighbourhood.'}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2 text-xs">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.07] px-3 py-1.5 text-white/75">
+                <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                {vendorCount} {vendorCount === 1 ? 'vendor posting' : 'vendors posting'}
+              </span>
+              {viewMode === 'vendor' && role === 'vendor' ? (
+                <span className="rounded-full bg-white/[0.07] px-3 py-1.5 text-white/75">
+                  {myPostCount} {myPostCount === 1 ? 'post' : 'posts'} from your account
+                </span>
+              ) : (
+                <span className="rounded-full bg-white/[0.07] px-3 py-1.5 text-white/75">
+                  {filterCounts.all} {filterCounts.all === 1 ? 'post' : 'posts'} in Marketplace
+                </span>
+              )}
+            </div>
+          </div>
+          {canCreate && (
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {role === 'vendor' && viewMode === 'vendor' && auth.user?.menu?.length > 0 && (
+                <Button size="sm" variant="outline" onClick={() => setConfirmShareMenu(true)}>
+                  <Share2 className="h-4 w-4" /> Share full menu
+                </Button>
+              )}
+              <Button size="sm" onClick={() => setShowCreate(true)}>
+                <ImagePlus className="h-4 w-4" />
+                {role === 'admin' ? 'Create announcement' : viewMode === 'vendor' ? 'New post' : 'Create post'}
               </Button>
-            )}
-            <Button size="sm" onClick={() => setShowCreate(true)}>
-              <ImagePlus className="w-4 h-4" />
-              {role === 'admin' ? 'Create announcement' : viewMode === 'vendor' ? 'New post' : 'Create post'}
-            </Button>
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      </section>
 
-      {viewMode === 'vendor' && role === 'vendor' ? null : (
-        /*
-         * Author filters. Solid dark pill for the active state rather than the
-         * previous accent outline, so the selection is unambiguous against the
-         * violet used for primary actions elsewhere in the app.
-         */
-        <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1 mb-4 -mx-4 px-4 sm:mx-0 sm:px-0">
-          {[
-            { id: 'all', label: 'All' },
-            { id: 'admin', label: 'Official' },
-            { id: 'vendor', label: 'Vendors' },
-            { id: 'customer', label: 'Community' },
-          ].map((f) => (
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_17rem]">
+        <section className="min-w-0" aria-label="Marketplace feed">
+          {viewMode === 'vendor' && role === 'vendor' ? null : (
+            <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
+              {[
+                { id: 'all', label: 'All posts' },
+                { id: 'admin', label: 'Official' },
+                { id: 'vendor', label: 'Vendors' },
+                { id: 'customer', label: 'Community' },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-pressed={filter === f.id}
+                  onClick={() => setFilter(f.id)}
+                  className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-full border px-3.5 text-sm font-medium transition-colors ${
+                    filter === f.id
+                      ? 'border-ink bg-ink text-white'
+                      : 'border-hairline-strong bg-white text-body hover:border-hairline-hover hover:text-ink'
+                  }`}
+                >
+                  {f.label}
+                  <span className="text-[11px] font-semibold tabular-nums opacity-65">{filterCounts[f.id]}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {canCreate && viewMode !== 'vendor' && (
             <button
-              key={f.id}
               type="button"
-              aria-pressed={filter === f.id}
-              onClick={() => setFilter(f.id)}
-              className={`shrink-0 inline-flex items-center gap-1.5 min-h-11 px-3 rounded-full text-sm font-medium border transition-colors duration-150 ${
-                filter === f.id
-                  ? 'bg-ink text-white border-ink'
-                  : 'bg-white text-body border-hairline-strong hover:border-hairline-hover hover:text-ink'
-              }`}
+              onClick={() => setShowCreate(true)}
+              className="mb-5 flex w-full items-center gap-3 rounded-2xl border border-hairline bg-white p-3 text-left shadow-card transition-colors hover:border-brand-line hover:bg-brand-soft/30"
             >
-              {f.label}
-              <span className="text-[11px] font-semibold tabular-nums opacity-60">{filterCounts[f.id]}</span>
+              <Avatar
+                name={auth.role === 'vendor' ? (auth.user?.name || auth.user?.fullName) : (auth.user?.fullName)}
+                src={auth.role === 'vendor' && isImageSource(auth.user?.logo) ? auth.user.logo : undefined}
+                size="sm"
+              />
+              <span className="min-w-0 flex-1 truncate rounded-xl border border-hairline bg-surface-sunken px-4 py-2.5 text-sm text-muted">
+                {role === 'admin' ? 'Share an official announcement...' : role === 'vendor' ? 'Post an update or promotion...' : "What's happening near you?"}
+              </span>
+              <ImagePlus className="h-5 w-5 shrink-0 text-brand-strong" aria-hidden="true" />
             </button>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* Composer. Flat, matching the cards below it, so it reads as the first
-          item in the feed rather than a separate hero element. */}
-      {canCreate && viewMode !== 'vendor' && (
-        <Card className="p-3 mb-5 flex items-center gap-3" onClick={() => setShowCreate(true)}>
-          <Avatar
-            name={auth.role === 'vendor' ? (auth.user?.name || auth.user?.fullName) : (auth.user?.fullName)}
-            src={auth.role === 'vendor' && isImageSource(auth.user?.logo) ? auth.user.logo : undefined}
-            size="sm"
-          />
-          <div className="flex-1 min-w-0 bg-surface-sunken border border-hairline rounded-control px-4 py-2.5 text-sm text-muted truncate">
-            {role === 'admin' ? 'Share an official announcement...' : role === 'vendor' ? 'Post an update or promotion...' : "What's happening near you?"}
-          </div>
-          <ImagePlus className="w-5 h-5 text-subtle shrink-0" />
-        </Card>
-      )}
+          {visiblePosts.length === 0 ? (
+            <Card className="p-6 sm:p-8">
+              <EmptyState
+                title="No posts yet"
+                description={viewMode === 'vendor' ? "You haven't posted anything yet. Create your first post!" : "Be the first to post in the marketplace!"}
+              />
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {visiblePosts.map((post) => (
+                <PostCard
+                  key={post.id}
+                  post={post}
+                  role={role}
+                  currentUserId={auth.user?.id}
+                  onLike={() => toggleLikePost(post.id)}
+                  onOpen={() => setSelectedPost(post)}
+                  onDelete={() => setConfirmDelete(post.id)}
+                  onPin={() => togglePinPost(post, !post.pinned)}
+                  onHide={() => toggleHidePost(post, !post.hidden)}
+                  onReport={() => setReportPostId(post.id)}
+                  vendorView={viewMode === 'vendor'}
+                />
+              ))}
+            </div>
+          )}
+        </section>
 
-      {visiblePosts.length === 0 ? (
-        <EmptyState
-          title="No posts yet"
-          description={viewMode === 'vendor' ? "You haven't posted anything yet. Create your first post!" : "Be the first to post in the marketplace!"}
-        />
-      ) : (
-        <div className="space-y-5 max-w-2xl mx-auto">
-          {visiblePosts.map((post) => (
-            <PostCard
-              key={post.id}
-              post={post}
-              role={role}
-              currentUserId={auth.user?.id}
-              onLike={() => toggleLikePost(post.id)}
-              onOpen={() => setSelectedPost(post)}
-              onDelete={() => setConfirmDelete(post.id)}
-              onPin={() => togglePinPost(post.id)}
-              onHide={() => toggleHidePost(post.id)}
-              onReport={() => setReportPostId(post.id)}
-              vendorView={viewMode === 'vendor'}
-            />
-          ))}
-        </div>
-      )}
+        <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start" aria-label="Marketplace information">
+          {role === 'admin' ? (
+            <Card className="p-4">
+              <div className="flex items-start gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand-strong">
+                  <Flag className="h-4 w-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-sm font-semibold text-ink">Report queue</h2>
+                  <p className="mt-1 text-sm leading-5 text-muted">
+                    {reportCount === 0 ? 'No posts need review.' : `${reportCount} ${reportCount === 1 ? 'post needs' : 'posts need'} review.`}
+                  </p>
+                </div>
+              </div>
+              <Link
+                to="/admin/reports"
+                className="mt-4 inline-flex min-h-10 w-full items-center justify-between rounded-xl border border-hairline px-3 text-sm font-semibold text-brand-strong transition-colors hover:bg-brand-soft"
+              >
+                Review reports <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Card>
+          ) : (
+            <Card className="p-4">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-brand-strong" aria-hidden="true" />
+                <h2 className="text-sm font-semibold text-ink">Keep it community-friendly</h2>
+              </div>
+              <p className="mt-2 text-sm leading-5 text-muted">
+                Share helpful local updates, be respectful, and report posts that look unsafe or misleading.
+              </p>
+              {role === 'vendor' && (
+                <div className="mt-4 border-t border-hairline pt-3">
+                  <p className="text-xs font-medium text-muted">YOUR POSTS</p>
+                  <p className="mt-1 text-xl font-bold tabular-nums text-ink">{myPostCount}</p>
+                </div>
+              )}
+            </Card>
+          )}
+          <Card className="p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Community feed</p>
+            <div className="mt-3 space-y-2.5">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-body">Vendors posting</span>
+                <span className="font-semibold tabular-nums text-ink">{vendorCount}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-body">Shown in feed</span>
+                <span className="font-semibold tabular-nums text-ink">{visiblePosts.length}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-body">Official updates</span>
+                <span className="font-semibold tabular-nums text-ink">{filterCounts.admin}</span>
+              </div>
+            </div>
+          </Card>
+        </aside>
+      </div>
 
       {showCreate && (
         <CreatePostModal
           onClose={() => setShowCreate(false)}
           uploadMediaFile={uploadMediaFile}
-          onSubmit={(data) => {
-            addPost(data);
-            setShowCreate(false);
+          onSubmit={async (data) => {
+            const post = await addPost(data);
+            if (post) setShowCreate(false);
+            return post;
           }}
           role={role}
         />
@@ -186,15 +290,15 @@ export default function SharedMarketplace({ viewMode = 'feed' }) {
         />
       )}
 
-      {selectedPost && (
+      {activeSelectedPost && (
         <PostDetailModal
-          post={selectedPost}
+          post={activeSelectedPost}
           role={role}
           currentUserId={auth.user?.id}
           onClose={() => setSelectedPost(null)}
-          onLike={() => toggleLikePost(selectedPost.id)}
-          onComment={(content) => addComment(selectedPost.id, content)}
-          onDeleteComment={(cid) => deleteComment(selectedPost.id, cid)}
+          onLike={() => toggleLikePost(activeSelectedPost.id)}
+          onComment={(content) => addComment(activeSelectedPost.id, content)}
+          onDeleteComment={(cid) => deleteComment(activeSelectedPost.id, cid)}
         />
       )}
 
@@ -202,21 +306,17 @@ export default function SharedMarketplace({ viewMode = 'feed' }) {
         <Modal open={true} onClose={() => { setReportPostId(null); setReportReason(''); }} title="Report Post" size="sm" footer={
           <>
             <Button variant="ghost" onClick={() => { setReportPostId(null); setReportReason(''); }}>Cancel</Button>
-            <Button variant="danger" onClick={() => {
-              if (reportReason) {
-                reportPost(reportPostId, reportReason);
-                setReportPostId(null);
-                setReportReason('');
-              }
-            }}>Submit Report</Button>
+            <Button onClick={submitPostReport} disabled={!reportReason || reportSubmitting} loading={reportSubmitting}>
+              Submit Report
+            </Button>
           </>
         }>
           <p className="text-sm text-body mb-3">Why are you reporting this post?</p>
-          <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
             {['Spam', 'Scam', 'Inappropriate', 'Fake Promotion', 'Offensive', 'Other'].map((r) => (
-              <label key={r} className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer ${reportReason === r ? 'border-brand bg-brand-soft' : 'border-hairline'}`}>
-                <input type="radio" name="reason" value={r} checked={reportReason === r} onChange={() => setReportReason(r)} className="sr-only" />
-                <span className="text-sm">{r}</span>
+              <label key={r} className={`flex min-h-11 items-center gap-2 rounded-xl border p-2.5 transition-colors cursor-pointer ${reportReason === r ? 'border-brand-line bg-brand-soft text-ink ring-1 ring-inset ring-brand-line' : 'border-hairline text-body hover:border-brand-line hover:bg-brand-soft/40'}`}>
+                <input type="radio" name="reason" value={r} checked={reportReason === r} onChange={() => setReportReason(r)} className="h-4 w-4 shrink-0 accent-violet-400" />
+                <span className="text-xs font-medium sm:text-sm">{r}</span>
               </label>
             ))}
           </div>
@@ -260,8 +360,9 @@ function PostCard({ post, role, currentUserId, onLike, onOpen, onDelete, onPin, 
   const canHide = isAdmin;
   const liked = post.likedBy.includes(currentUserId);
   const authorImage = post.authorRole === 'vendor' && isImageSource(post.authorAvatar) ? post.authorAvatar : null;
+  const portalBase = role === 'admin' ? '/admin' : role === 'vendor' ? '/vendor' : '/customer';
   const profilePath = post.authorRole === 'vendor' || post.authorRole === 'customer'
-    ? `/profiles/${post.authorRole}/${post.authorRole === 'vendor' ? (post.vendorId || post.authorId) : post.authorId}`
+    ? `${portalBase}/profile/${post.authorRole}/${post.authorRole === 'vendor' ? (post.vendorId || post.authorId) : post.authorId}`
     : null;
 
   return (
@@ -283,8 +384,8 @@ function PostCard({ post, role, currentUserId, onLike, onOpen, onDelete, onPin, 
           <EyeOff className="w-3 h-3" aria-hidden="true" /> Hidden (only admins can see this)
         </div>
       )}
-      {post.reported && (
-        <div className="flex items-center gap-1 border-b border-danger/25 bg-danger-soft px-4 py-1.5 text-xs font-medium text-danger">
+      {post.reported && role === 'admin' && (
+        <div className="flex items-center gap-1 border-b border-brand-line bg-brand-soft px-4 py-1.5 text-xs font-medium text-brand-strong">
           <Flag className="w-3 h-3" aria-hidden="true" /> Reported: {post.reportReason}
         </div>
       )}
@@ -358,8 +459,8 @@ function PostCard({ post, role, currentUserId, onLike, onOpen, onDelete, onPin, 
                       <EyeOff className="w-4 h-4" /> {post.hidden ? 'Unhide' : 'Hide'}
                     </button>
                   )}
-                  {!isAuthor && !isAdmin && (
-                    <button type="button" role="menuitem" onClick={() => { onReport(); setMenuOpen(false); }} className="w-full text-left px-3 py-2 text-sm text-danger hover:bg-danger-soft flex items-center gap-2">
+                  {!isAuthor && !isAdmin && !post.reported && (
+                    <button type="button" role="menuitem" onClick={() => { onReport(); setMenuOpen(false); }} className="w-full text-left px-3 py-2 text-sm text-brand-strong hover:bg-brand-soft flex items-center gap-2">
                       <Flag className="w-4 h-4" /> Report
                     </button>
                   )}
@@ -579,8 +680,7 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
   const [pinned, setPinned] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const contentWords = countWords(content);
-  const contentOverLimit = contentWords > WORD_LIMIT;
+  const contentOverLimit = !isWithinMessageLimits(content);
 
   const types = POST_TYPES[role] || POST_TYPES.customer;
 
@@ -595,8 +695,8 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
 
   const handleSubmit = async () => {
     if (!content.trim()) return;
-    if (countWords(content) > WORD_LIMIT) {
-      setError(wordLimitMessage());
+    if (!isWithinMessageLimits(content)) {
+      setError(messageLimitMessage());
       return;
     }
     setSaving(true);
@@ -611,8 +711,14 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
       }
       image = result.url;
     }
-    onSubmit({ content: content.trim(), image, type: postType, pinned });
-    setSaving(false);
+    try {
+      const post = await onSubmit({ content: content.trim(), image, type: postType, pinned });
+      if (!post) setError('The post was not published. Please try again.');
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'The post was not published. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -656,13 +762,10 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
         }
         rows={4}
         value={content}
+        maxLength={MAX_TEXT_LENGTH}
         onChange={(e) => setContent(e.target.value)}
         autoFocus
       />
-      <div className={`mt-1.5 text-right text-xs ${contentOverLimit ? 'font-semibold text-danger' : 'text-muted'}`}>
-        {contentWords}/{WORD_LIMIT} words{contentOverLimit ? ' — over the limit' : ''}
-      </div>
-
       {imagePreview && (
         <div className="relative mt-3">
           <img src={imagePreview} alt="Selected post" className="w-full rounded-lg max-h-[30vh] object-cover" />
@@ -694,19 +797,53 @@ function CreatePostModal({ onClose, onSubmit, uploadMediaFile, role }) {
 
 function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment, onDeleteComment }) {
   const [commentText, setCommentText] = useState('');
-  const commentWords = countWords(commentText);
-  const commentOverLimit = commentWords > WORD_LIMIT;
+  const [submitting, setSubmitting] = useState(false);
+  const commentOverLimit = !isWithinMessageLimits(commentText);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (commentText.trim() && !commentOverLimit) {
-      onComment(commentText);
-      setCommentText('');
+    if (!commentText.trim() || commentOverLimit || submitting) return;
+    setSubmitting(true);
+    try {
+      const saved = await onComment(commentText);
+      if (saved) setCommentText('');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <Modal open={true} onClose={onClose} title="" size="lg">
+    <Modal
+      open={true}
+      onClose={onClose}
+      title="Post and comments"
+      size="xl"
+      footer={(
+        <form onSubmit={handleSubmit} className="flex w-full items-center gap-2">
+          <label className="sr-only" htmlFor="marketplace-comment-input">Write a comment</label>
+          <input
+            id="marketplace-comment-input"
+            type="text"
+            value={commentText}
+            maxLength={MAX_TEXT_LENGTH}
+            onChange={(e) => setCommentText(e.target.value)}
+            placeholder="Write a comment..."
+            aria-label="Write a comment"
+            className="min-w-0 flex-1 rounded-xl border border-hairline bg-white px-3 py-2.5 text-sm focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-line"
+          />
+          <button
+            type="submit"
+            aria-label={submitting ? 'Posting comment' : 'Post comment'}
+            disabled={!commentText.trim() || commentOverLimit || submitting}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand text-white transition-colors hover:bg-brand-strong disabled:opacity-50"
+          >
+            {submitting
+              ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
+              : <Send className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        </form>
+      )}
+    >
       <div className="flex items-start gap-3 mb-4">
         <div className="w-10 h-10 rounded-full bg-surface-hover flex items-center justify-center text-lg">
           {post.authorRole === 'vendor' && isImageSource(post.authorAvatar) ? <img src={post.authorAvatar} alt={post.authorName} className="w-full h-full rounded-full object-cover" /> : (post.authorName ? post.authorName.slice(0, 1).toUpperCase() : '?')}
@@ -721,14 +858,14 @@ function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment
         </div>
       </div>
       <p className="text-sm text-ink whitespace-pre-wrap mb-3">{post.content}</p>
-      {/* No `{post.image && ...}` guard here: MediaImage renders `fallback` for
-          an empty src too, which is the same result and one less branch. */}
-      <MediaImage
-        src={post.image}
-        alt=""
-        className="w-full rounded-lg mb-3 max-h-96 object-cover"
-        fallback={<PostImageFallback text={post.content} />}
-      />
+      {post.image && (
+        <MediaImage
+          src={post.image}
+          alt=""
+          className="mb-3 max-h-60 w-full rounded-lg object-cover sm:max-h-96"
+          fallback={<PostImageFallback text={post.content} />}
+        />
+      )}
 
       <div className="border-t pt-3 mb-3">
         <div className="flex items-center gap-1 text-sm">
@@ -738,21 +875,25 @@ function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment
         </div>
       </div>
 
-      <div className="border-t pt-3 space-y-3 max-h-64 overflow-y-auto">
-        <h4 className="text-xs font-semibold text-muted uppercase">{post.comments.length} Comments</h4>
+      <div className="space-y-3 border-t border-hairline pt-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted">{post.comments.length} Comments</h4>
         {post.comments.length === 0 ? (
           <p className="text-sm text-muted text-center py-4">No comments yet. Be the first to comment!</p>
         ) : (
           post.comments.map((c) => (
-            <div key={c.id} className="flex gap-2">
-              <div className="w-8 h-8 rounded-full bg-surface-hover flex items-center justify-center text-sm shrink-0 overflow-hidden">{c.authorRole === 'vendor' && isImageSource(c.authorAvatar) ? <img src={c.authorAvatar} alt={c.authorName} className="w-full h-full object-cover" /> : (c.authorName ? c.authorName.slice(0, 1).toUpperCase() : '?')}</div>
-              <div className="flex-1 bg-white rounded-control px-3 py-2 border border-hairline">
+            <div key={c.id} className="flex min-w-0 items-start gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-surface-hover text-sm">
+                {c.authorRole === 'vendor' && isImageSource(c.authorAvatar)
+                  ? <img src={c.authorAvatar} alt={c.authorName} className="h-full w-full object-cover" />
+                  : (c.authorName ? c.authorName.slice(0, 1).toUpperCase() : '?')}
+              </div>
+              <div className="min-w-0 flex-1 rounded-xl border border-hairline bg-surface-sunken px-3 py-2.5">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="font-semibold text-ink text-xs">{c.authorName}</span>
                   {c.authorRole === 'vendor' && <Badge color="green">Vendor</Badge>}
                   {c.authorRole === 'admin' && <Badge color="blue">Admin</Badge>}
                 </div>
-                <p className="text-sm text-ink">{c.content}</p>
+                <p className="whitespace-pre-wrap break-words text-sm text-ink">{c.content}</p>
                 <div className="flex items-center gap-3 mt-1 text-xs text-muted">
                   <span>{timeAgo(c.createdAt || c.time)}</span>
                   {((c.authorId && String(c.authorId) === String(currentUserId)) || role === 'admin') && (
@@ -765,21 +906,6 @@ function PostDetailModal({ post, role, currentUserId, onClose, onLike, onComment
         )}
       </div>
 
-      <form onSubmit={handleSubmit} className="mt-3 flex gap-2 border-t pt-3">
-        <input
-          type="text"
-          value={commentText}
-          onChange={(e) => setCommentText(e.target.value)}
-          placeholder="Write a comment..."
-          className="flex-1 px-3 py-2 border border-hairline rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-brand-line focus:border-brand-400"
-        />
-        <button type="submit" aria-label="Post comment" disabled={!commentText.trim() || commentOverLimit} className="w-11 h-11 bg-brand text-white rounded-full flex items-center justify-center disabled:opacity-50 shrink-0">
-          <Send className="w-4 h-4" />
-        </button>
-      </form>
-      <div className={`mt-1 text-right text-[11px] ${commentOverLimit ? 'font-semibold text-danger' : 'text-muted'}`}>
-        {commentWords}/{WORD_LIMIT} words{commentOverLimit ? ' — over the limit' : ''}
-      </div>
     </Modal>
   );
 }

@@ -99,7 +99,7 @@ export default function Landing() {
             </div>
 
             <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] font-medium text-white/60 sm:text-xs lg:text-sm">
-              <span className="inline-flex items-center gap-1.5"><BadgeCheck className="h-4 w-4 text-success" aria-hidden="true" /> Local shops</span>
+              <span className="inline-flex items-center gap-1.5"><BadgeCheck className="h-4 w-4 text-emerald-300" aria-hidden="true" /> Local shops</span>
               <span className="inline-flex items-center gap-1.5"><Clock3 className="h-4 w-4 text-violet-300" aria-hidden="true" /> Live order updates</span>
               <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4 text-violet-300" aria-hidden="true" /> Lancaster area</span>
             </div>

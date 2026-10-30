@@ -1,7 +1,8 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Trash2, Plus, Minus, ShoppingCart, MapPin } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Trash2, Plus, Minus, ShoppingCart, MapPin } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, formatPeso, EmptyState, getProductImage, LogoMark, StatusBadge } from '@/components/UI';
+import { getCartGroupBlockReason } from '@/lib/cartAvailability';
 
 export default function CustomerCart() {
   const { cart, vendors, updateCartQty, removeFromCart } = useApp();
@@ -23,13 +24,12 @@ export default function CustomerCart() {
   }, {});
 
   const groups = Object.values(grouped);
-  const grandSubtotal = cart.reduce((s, i) => s + i.price * i.quantity, 0);
   const unavailableGroups = groups.filter((group) => !group.vendor);
   const itemCount = cart.reduce((s, i) => s + i.quantity, 0);
 
   if (cart.length === 0) {
     return (
-      <div>
+      <div className="mx-auto w-full max-w-3xl">
         <h1 className="text-2xl font-bold text-ink tracking-tight mb-4">Cart</h1>
         <EmptyState
           icon={ShoppingCart}
@@ -58,7 +58,7 @@ export default function CustomerCart() {
   if (unavailableGroups.length > 0) {
     const unavailableItems = unavailableGroups.flatMap((group) => group.items);
     return (
-      <div>
+      <div className="mx-auto w-full max-w-3xl">
         <h1 className="text-2xl font-bold text-ink tracking-tight mb-4">Cart</h1>
         <div className="rounded-card border border-danger/30 bg-danger-soft p-4 mb-4">
           <div className="font-semibold text-danger">Some items can no longer be ordered</div>
@@ -118,11 +118,7 @@ export default function CustomerCart() {
   }
 
   return (
-    // pb reserves room for the fixed checkout bar: the nav height (56px + bottom
-    // inset) plus roughly 80px of bar height. The inset has to be in the padding
-    // as well as the bar's offset, or the last row of the cart stays hidden behind
-    // the bar on a phone with a home indicator.
-    <div className="pb-[calc(12rem+env(safe-area-inset-bottom))]">
+    <div className="mx-auto w-full max-w-3xl pb-6">
       <div className="flex items-center gap-2 mb-5">
         <Link to="/customer/shops" aria-label="Back to shops" className="-ml-1 tap-target rounded-full text-muted hover:bg-surface-hover hover:text-ink">
           <ArrowLeft className="w-5 h-5" />
@@ -135,6 +131,7 @@ export default function CustomerCart() {
 
       <div className="space-y-4">
         {groups.map(({ vendor, items, subtotal }) => {
+          const checkoutBlockReason = getCartGroupBlockReason(vendor, items);
           return (
             <Card key={String(vendor.id)} className="overflow-hidden">
               {/* Vendor header on a sunken surface. The shop name is the primary
@@ -228,30 +225,27 @@ export default function CustomerCart() {
                   <span className="font-semibold text-ink tabular-nums min-w-0 text-right break-words">{formatPeso(subtotal)}</span>
                 </div>
               </div>
+
+              <div className="px-4 py-3 border-t border-hairline bg-white">
+                <button
+                  type="button"
+                  disabled={Boolean(checkoutBlockReason)}
+                  onClick={() => navigate('/customer/checkout', { state: { vendorId: vendor.id } })}
+                  className="group flex w-full items-center justify-between rounded-xl bg-brand px-4 py-2.5 text-white transition hover:bg-brand-strong disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/45"
+                >
+                  <div className="text-left">
+                    <div className="text-sm font-semibold">Proceed to checkout</div>
+                    <div className="text-xs text-white/80">{items.reduce((s, i) => s + i.quantity, 0)} item{items.reduce((s, i) => s + i.quantity, 0) !== 1 ? 's' : ''} • {formatPeso(subtotal)}</div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                </button>
+                {checkoutBlockReason && (
+                  <p role="status" className="mt-2 text-sm text-danger">{checkoutBlockReason}</p>
+                )}
+              </div>
             </Card>
           );
         })}
-      </div>
-
-      {/*
-        The subtotal bar is offset by the nav height *plus* the bottom inset.
-        bottom-20 is a flat 80px, but the bottom nav is h-14 + a
-        h-[env(safe-area-inset-bottom)] spacer, i.e. ~90px on a phone with a home
-        indicator -- so the bar slid under the nav and the checkout button in it
-        became untappable on exactly the devices that are most likely to be
-        holding a cart.
-      */}
-      <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] left-0 right-0 bg-white border-t border-hairline z-30 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-xs text-muted">Subtotal</div>
-            <div className="text-lg font-bold text-ink tabular-nums leading-tight">{formatPeso(grandSubtotal)}</div>
-          </div>
-          <Button className="shrink-0" size="lg" onClick={() => navigate('/customer/checkout')}>
-            Checkout
-          </Button>
-        </div>
-        <div className="h-[env(safe-area-inset-bottom)]" />
       </div>
     </div>
   );

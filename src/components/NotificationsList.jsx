@@ -144,7 +144,7 @@ export function NotificationsList({ styles, emptyDescription = "You're all caugh
                           title="Dismiss"
                           onClick={(event) => {
                             event.stopPropagation();
-                            dismissNotification(n.id);
+                            dismissNotification(n);
                           }}
                           className="-m-1.5 p-1.5 rounded-control text-subtle hover:text-ink hover:bg-surface-sunken transition-colors"
                         >

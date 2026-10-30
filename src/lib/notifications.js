@@ -17,9 +17,10 @@
 */
 
 /*
-  Account alerts (a new registration, a lockout after repeated failed logins) are
-  created locally with `userId: 'admin'`, because at the moment they are raised
-  nobody is signed in and there is no admin uuid to address them to.
+  Registration alerts are created locally with `userId: 'admin'`, because at the
+  moment they are raised nobody is signed in and there is no admin uuid to address
+  them to. Failed-login alerts are different: the database writes those directly
+  to the targeted account owner's UUID.
 
   Once Supabase is connected the rows come back through `mapNotifications`, which
   sets `userId` to `notifications.user_id` -- the real uuid of whoever owned the

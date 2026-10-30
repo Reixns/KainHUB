@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { User, Mail, Phone, MapPin, Save, ShoppingBag, Heart, LogOut, ChevronRight } from 'lucide-react';
+import { User, Mail, Phone, MapPin, Save, ShoppingBag, Heart, LogOut, ChevronRight, Settings } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Card, Button, Input, Avatar, Badge, CARD_FOCUS_RING } from '@/components/UI';
+import { Card, Button, Input, Avatar, Badge, PageHeader, CARD_FOCUS_RING } from '@/components/UI';
 import { InfoRow } from '@/components/ProfileParts';
 import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import { Link, useNavigate } from 'react-router-dom';
+import { FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 export default function CustomerProfile() {
   // `uploadMediaFile`, `showToast`, `uploading` and `setUploading` went out with
@@ -54,7 +55,13 @@ export default function CustomerProfile() {
   const myPostCount = posts.filter((p) => String(p.authorId) === String(user.id)).length;
 
   return (
-    <div>
+    <div className="mx-auto w-full max-w-3xl">
+      <PageHeader
+        eyebrow="Your account"
+        icon={User}
+        title="Profile"
+        description="Keep your contact details up to date so shops can reach you."
+      />
       {/*
         The cover strip and the last upload button on this page are gone. The
         customer's avatar is initials-only and stays that way, so with no cover
@@ -99,10 +106,10 @@ export default function CustomerProfile() {
 
         {editing ? (
           <div className="space-y-3">
-            <Input label="Full Name" icon={User} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
+            <Input label="Full Name" icon={User} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} maxLength={FIELD_CHAR_LIMITS.fullName} />
             <Input label="Mobile" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm({ ...form, mobile: sanitizeMobile(e.target.value) })} />
             <Input label="Email" icon={Mail} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+            <Input label="Address" icon={MapPin} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} maxLength={FIELD_CHAR_LIMITS.address} />
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setEditing(false)}>Cancel</Button>
               <Button className="flex-1" onClick={handleSave}><Save className="w-4 h-4" /> Save</Button>
@@ -118,16 +125,10 @@ export default function CustomerProfile() {
         )}
       </Card>
 
-      {/*
-        "My Orders" and "Marketplace" are the only customer destinations that
-        exist as routes. The previous "Saved Posts" row pointed at
-        /customer/marketplace, which is not a registered route, so it landed on
-        the 404 page -- and a "Settings" row pointed at "#" and did nothing at
-        all (there is no customer settings screen).
-      */}
       <Card className="p-2 mb-4">
         <MenuItemLink icon={<ShoppingBag className="w-5 h-5" />} label="My orders" to="/customer/orders" />
         <MenuItemLink icon={<Heart className="w-5 h-5" />} label="Community marketplace" to="/customer/community" />
+        <MenuItemLink icon={<Settings className="w-5 h-5" />} label="Settings" to="/customer/settings" />
       </Card>
 
       <Button variant="outline" className="w-full text-danger border-danger/30 hover:bg-danger-soft" onClick={handleLogout}>

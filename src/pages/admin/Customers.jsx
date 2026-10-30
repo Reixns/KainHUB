@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Search, Ban, Play, Trash2 } from 'lucide-react';
+import { Search, Eye, UserRound, Ban, Play, Trash2 } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, Badge, EmptyState, StatusBadge, Avatar, isEmojiSource, isImageSource, formatPeso, Tabs, LogoMark, Modal } from '@/components/UI';
 
@@ -60,6 +60,8 @@ export default function AdminCustomers() {
                   </div>
                 </div>
                 <div className="flex gap-2 flex-wrap">
+                  <Button as={Link} to={`/admin/customers/${c.id}`} size="sm" variant="outline"><Eye className="w-4 h-4" /> View</Button>
+                  <Button as={Link} to={`/admin/profile/customer/${c.id}`} size="sm" variant="ghost"><UserRound className="w-4 h-4" /> Profile</Button>
                   {c.status === 'active' ? (
                     <Button size="sm" variant="danger" onClick={() => suspendCustomer(c.id)}><Ban className="w-4 h-4" /> Suspend</Button>
                   ) : (
@@ -115,6 +117,11 @@ export function AdminCustomerDetail() {
             <p className="text-sm text-muted">{customer.address}</p>
             <Badge color={customer.status === 'active' ? 'green' : 'red'}>{customer.status}</Badge>
           </div>
+        </div>
+        <div className="mt-4">
+          <Button as={Link} to={`/admin/profile/customer/${customer.id}`} variant="outline" size="sm">
+            <UserRound className="w-4 h-4" /> View profile
+          </Button>
         </div>
       </Card>
       <Card className="p-4">

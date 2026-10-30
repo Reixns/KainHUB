@@ -29,7 +29,7 @@ export default function FavoriteButton({
   const name = label || (type === 'shop' ? 'this shop' : 'this dish');
 
   const variants = {
-    surface: 'tap-target rounded-full bg-white/90 text-ink hover:bg-white shadow-sm',
+    surface: 'tap-target rounded-full bg-black/45 text-white ring-1 ring-white/25 shadow-sm backdrop-blur-sm hover:bg-black/60',
     plain: 'tap-target rounded-full text-muted hover:bg-surface-hover hover:text-ink',
     icon: 'tap-target rounded-full text-muted hover:bg-surface-hover hover:text-ink',
   };

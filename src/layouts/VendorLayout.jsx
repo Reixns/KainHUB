@@ -185,7 +185,7 @@ export default function VendorLayout() {
                 }`
               }
             >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors group-hover:text-ink group-[.is-active]:bg-white group-[.is-active]:text-brand-deep group-[.is-active]:shadow-sm">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors group-hover:text-ink group-[.is-active]:bg-brand/30 group-[.is-active]:text-brand-deep group-[.is-active]:shadow-sm">
                 <item.icon className="h-[18px] w-[18px]" />
               </span>
               <span className="flex-1">{item.label}</span>

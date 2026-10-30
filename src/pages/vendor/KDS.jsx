@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clock, Phone, MapPin, Check, Package, ChefHat, Truck, AlertTriangle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Badge, Button, StatusBadge, formatPeso, Tabs, formatDateTime, formatQueue, LogoMark } from '@/components/UI';
+import { countCharacters, FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 export default function VendorKDS() {
   const { auth, orders, updateOrderStatus, rejectOrder, savingOrderIds, ordersRealtimeStatus } = useApp();
@@ -196,10 +197,14 @@ function OrderCard({ order, shop, onUpdate, onReject, saving }) {
               id={`reject-${order.id}`}
               className="w-full px-2.5 py-2 text-sm border border-hairline-strong rounded-control focus:border-brand focus:ring-2 focus:ring-brand-muted"
               rows={2}
+              maxLength={FIELD_CHAR_LIMITS.rejectionReason}
               placeholder="e.g. Item out of stock"
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
             />
+            <p className={`text-right text-xs ${countCharacters(rejectReason) > FIELD_CHAR_LIMITS.rejectionReason ? 'font-semibold text-danger' : 'text-muted'}`}>
+              {countCharacters(rejectReason)}/{FIELD_CHAR_LIMITS.rejectionReason} characters
+            </p>
             <div className="flex gap-2">
               <Button type="button" size="sm" variant="outline" full onClick={() => setShowReject(false)}>Cancel</Button>
               <Button

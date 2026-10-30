@@ -20,6 +20,7 @@ import { validatePassword } from '@/lib/supabase';
 import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import FoodCategoryField from '@/components/FoodCategoryField';
 import PasswordRequirements from '@/components/PasswordRequirements';
+import { FIELD_CHAR_LIMITS, findCharacterLimitViolation, characterLimitMessage } from '@/lib/textLimits';
 
 export default function VendorRegister() {
   const { registerVendor, platformSettings } = useApp();
@@ -49,6 +50,20 @@ export default function VendorRegister() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const errs = {};
+    const violation = findCharacterLimitViolation({
+      ownerName: form.ownerName,
+      shopName: form.shopName,
+      address: form.shopAddress,
+      category: form.category,
+      operatingHours: form.operatingHours,
+      shopDescription: form.description,
+    });
+    if (violation) {
+      const field = violation.field === 'address' ? 'shopAddress'
+        : violation.field === 'shopDescription' ? 'description'
+          : violation.field;
+      errs[field] = characterLimitMessage(violation.limit);
+    }
     const emailValue = form.email.trim();
     const emailParts = emailValue.split('@');
     if (!form.ownerName.trim()) errs.ownerName = 'Required';
@@ -139,18 +154,19 @@ export default function VendorRegister() {
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <Input label="Shop name" icon={Store} value={form.shopName} onChange={updateField('shopName')} error={errors.shopName} autoComplete="organization" required className="register-input lg:!py-2" />
-                  <Input label="Owner name" icon={User} value={form.ownerName} onChange={updateField('ownerName')} error={errors.ownerName} autoComplete="name" required className="register-input lg:!py-2" />
+                  <Input label="Shop name" icon={Store} value={form.shopName} onChange={updateField('shopName')} error={errors.shopName} maxLength={FIELD_CHAR_LIMITS.shopName} autoComplete="organization" required className="register-input lg:!py-2" />
+                  <Input label="Owner name" icon={User} value={form.ownerName} onChange={updateField('ownerName')} error={errors.ownerName} maxLength={FIELD_CHAR_LIMITS.ownerName} autoComplete="name" required className="register-input lg:!py-2" />
                   <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm((current) => ({ ...current, mobile: sanitizeMobile(e.target.value) }))} error={errors.mobile} autoComplete="tel" required className="register-input lg:!py-2" />
                   <Input label="Email address" icon={Mail} type="email" value={form.email} onChange={updateField('email')} error={errors.email} autoComplete="email" required className="register-input lg:!py-2" />
-                  <Input label="Shop address (Zone 1)" icon={MapPin} value={form.shopAddress} onChange={updateField('shopAddress')} error={errors.shopAddress} autoComplete="street-address" required className="register-input sm:col-span-2 lg:!py-2" />
+                  <Input label="Shop address (Zone 1)" icon={MapPin} value={form.shopAddress} onChange={updateField('shopAddress')} error={errors.shopAddress} maxLength={FIELD_CHAR_LIMITS.address} autoComplete="street-address" required className="register-input sm:col-span-2 lg:!py-2" />
                   <FoodCategoryField value={form.category} onChange={(value) => setForm((current) => ({ ...current, category: value }))} error={errors.category} />
-                  <Input label="Operating hours" icon={Clock} value={form.operatingHours} onChange={updateField('operatingHours')} className="register-input lg:!py-2" />
+                  <Input label="Operating hours" icon={Clock} value={form.operatingHours} onChange={updateField('operatingHours')} maxLength={FIELD_CHAR_LIMITS.operatingHours} className="register-input lg:!py-2" />
                   <Textarea
                     label="About your shop"
                     placeholder="Describe your shop (optional)"
                     value={form.description}
                     onChange={updateField('description')}
+                    maxLength={FIELD_CHAR_LIMITS.shopDescription}
                     rows={2}
                     className="register-input sm:col-span-2 lg:!py-2"
                   />

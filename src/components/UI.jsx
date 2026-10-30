@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { X, CheckCircle, AlertCircle, Info, Utensils } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { X, CheckCircle, AlertCircle, Info, Utensils, ArrowUpDown, ChevronDown } from 'lucide-react';
+import { countCharacters } from '@/lib/textLimits';
 
 export const PRODUCT_IMAGE_URLS = {
   '🍗': 'https://images.unsplash.com/photo-1598103442097-8b74394b95c6?w=600',
@@ -83,7 +85,7 @@ export function Button({ children, variant = 'primary', size = 'md', className =
   const variants = {
     primary: 'bg-brand text-white shadow-brand hover:bg-brand-strong active:bg-brand-deep',
     secondary: 'bg-brand-soft text-brand-deep ring-1 ring-inset ring-brand-line hover:bg-brand-muted',
-    outline: 'bg-white text-body ring-1 ring-inset ring-hairline-strong hover:bg-surface-sunken hover:text-ink active:bg-surface-hover',
+    outline: 'bg-transparent text-body ring-1 ring-inset ring-hairline-strong hover:bg-surface-sunken hover:text-ink active:bg-surface-hover',
     danger: 'bg-danger text-white hover:bg-danger-deep active:bg-danger-deep',
     success: 'bg-success text-white hover:bg-success-deep active:bg-success-deep',
     ghost: 'text-body hover:bg-surface-hover hover:text-ink',
@@ -138,7 +140,9 @@ const FIELD_BASE = 'w-full rounded-control text-sm bg-white transition-colors du
 const FIELD_OK = 'border border-hairline-strong hover:border-hairline-hover focus:border-brand focus:ring-2 focus:ring-brand-muted';
 const FIELD_ERR = 'border-danger/50 focus:border-danger focus:ring-2 focus:ring-danger/20';
 
-export function Input({ label, error, icon: Icon, hint, endAdornment, className = '', labelClassName = 'text-body', hintClassName = 'text-muted', ...props }) {
+export function Input({ label, error, icon: Icon, hint, endAdornment, maxCharacters, className = '', labelClassName = 'text-body', hintClassName = 'text-muted', ...props }) {
+  const characters = maxCharacters ? countCharacters(props.value) : 0;
+  const overLimit = maxCharacters && characters > maxCharacters;
   return (
     <div className="w-full">
       {label && <label className={`block text-sm font-medium ${labelClassName} mb-1.5`}>{label}</label>}
@@ -158,11 +162,18 @@ export function Input({ label, error, icon: Icon, hint, endAdornment, className 
       {error
         ? <p className="text-xs text-danger mt-1.5 font-medium">{error}</p>
         : hint && <p className={`text-xs mt-1.5 ${hintClassName}`}>{hint}</p>}
+      {maxCharacters && (
+        <p className={`mt-1 text-right text-xs ${overLimit ? 'font-semibold text-danger' : 'text-muted'}`} aria-live="polite">
+          {characters}/{maxCharacters} characters{overLimit ? ' — over the limit' : ''}
+        </p>
+      )}
     </div>
   );
 }
 
-export function Textarea({ label, error, hint, className = '', ...props }) {
+export function Textarea({ label, error, hint, maxCharacters, className = '', ...props }) {
+  const characters = maxCharacters ? countCharacters(props.value) : 0;
+  const overLimit = maxCharacters && characters > maxCharacters;
   return (
     <div className="w-full">
       {label && <label className="block text-sm font-medium text-body mb-1.5">{label}</label>}
@@ -174,6 +185,11 @@ export function Textarea({ label, error, hint, className = '', ...props }) {
       {error
         ? <p className="text-xs text-danger mt-1.5 font-medium">{error}</p>
         : hint && <p className="text-xs text-muted mt-1.5">{hint}</p>}
+      {maxCharacters && (
+        <p className={`mt-1 text-right text-xs ${overLimit ? 'font-semibold text-danger' : 'text-muted'}`} aria-live="polite">
+          {characters}/{maxCharacters} characters{overLimit ? ' — over the limit' : ''}
+        </p>
+      )}
     </div>
   );
 }
@@ -230,6 +246,37 @@ export function Card({ children, className = '', onClick, flat, interactive = fa
 }
 
 /*
+ * Every customer page used to build its own title block, so the heading size,
+ * subtitle spacing, and action alignment drifted between screens (and Shops /
+ * Foods cancelled the shell gutter entirely, which put their titles a few
+ * pixels off every other page). One header keeps the portal visually aligned.
+ *
+ * Colours go through the theme tokens rather than raw whites so the same
+ * component also reads correctly on the light surfaces outside the portal.
+ */
+export function PageHeader({ eyebrow, icon: EyebrowIcon, title, description, actions, className = '' }) {
+  return (
+    <header className={`mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:items-end sm:justify-between ${className}`}>
+      <div className="min-w-0">
+        {eyebrow && (
+          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-strong">
+            {EyebrowIcon && <EyebrowIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+            {eyebrow}
+          </p>
+        )}
+        <h1 className="text-2xl font-extrabold tracking-tight text-ink sm:text-3xl">{title}</h1>
+        {description && <p className="mt-1 max-w-2xl text-sm text-muted">{description}</p>}
+      </div>
+      {actions && (
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+          {actions}
+        </div>
+      )}
+    </header>
+  );
+}
+
+/*
  * Small status pill. Deliberately low-contrast: these sit next to content and
  * should read as metadata, not compete with the page headline for attention.
  */
@@ -256,6 +303,14 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }) {
   const panelRef = useRef(null);
   const titleId = useId();
   const restoreFocusTo = useRef(null);
+  const activeThemeRoot = open && typeof document !== 'undefined'
+    ? document.activeElement?.closest('.customer-portal-theme, .staff-portal-theme')
+    : null;
+  const portalTheme = activeThemeRoot?.classList.contains('customer-portal-theme')
+    ? 'customer-portal-theme'
+    : activeThemeRoot
+      ? 'staff-portal-theme'
+      : '';
 
   const onCloseRef = useRef(onClose);
   useEffect(() => {
@@ -300,7 +355,7 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }) {
     };
   }, [open]);
 
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
   const sizes = {
     sm: 'max-w-sm',
     md: 'max-w-md',
@@ -315,17 +370,15 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }) {
   // header was the first thing to go under the camera housing. max() keeps the
   // original 0.5rem/1rem gutters wherever no inset is reported.
   //
-  // Vertically the bottom inset matters on the mobile sheet (items-end), where the
-  // panel sits flush against the bottom edge; the header of a tall form could not
-  // scroll clear of the home indicator without it. The footer already carries its
-  // own inset padding for its buttons.
+  // On mobile the dialog is centred in the visible viewport instead of being
+  // anchored to the bottom. A dynamic-height cap keeps it above browser chrome
+  // and safe-area insets, while the body remains the only scrolling region.
   //
-  // max-h on the panel is max-h-full, against the overlay's content box, rather than
-  // a hand-computed 100dvh minus a guess, so it stays correct with these insets.
-  return (
-    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center pt-2 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:p-4 animate-fade-in">
-      {/* The scrim sits at z-[100] with the panel, so on mobile the sheet peeks
-          up from the bottom edge and a tap near the top still closes. */}
+  // The mobile cap follows the dynamic viewport and safe-area insets; desktop
+  // uses max-h-full against the overlay's padded content box.
+  return createPortal(
+    <div className={`${portalTheme} fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto p-2 pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:p-4 animate-fade-in`}>
+      {/* The scrim sits at z-[100] with the panel, so tapping outside closes it. */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true"></div>
       <div
         ref={panelRef}
@@ -333,7 +386,7 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }) {
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`relative bg-white w-full ${sizes[size]} rounded-card shadow-float max-h-full overflow-hidden flex flex-col animate-slide-up`}
+        className={`relative my-auto bg-white w-full ${sizes[size]} rounded-card shadow-float max-h-[calc(100dvh_-_1rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] sm:max-h-full overflow-hidden flex flex-col animate-slide-up`}
       >
         <div className="flex shrink-0 items-center justify-between gap-3 px-5 py-4 border-b border-hairline">
           <h3 id={titleId} className="font-semibold text-ink text-lg min-w-0 break-words">{title}</h3>
@@ -344,7 +397,8 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }) {
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && <div className="flex shrink-0 flex-wrap gap-2 justify-end border-t bg-surface-sunken px-5 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -669,6 +723,31 @@ export function Tabs({ tabs, activeTab, onChange, label = 'Sections' }) {
         );
       })}
     </div>
+  );
+}
+
+export function SortSelect({ value, onChange, options, label = 'Sort', className = '', compact = false }) {
+  return (
+    <label
+      className={`relative inline-flex ${compact ? 'h-10' : 'h-11'} min-w-0 shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] pl-3 pr-2 text-white/70 transition-colors hover:border-white/25 hover:bg-white/[0.08] focus-within:border-violet-400/70 focus-within:bg-white/[0.08] focus-within:ring-2 focus-within:ring-violet-400/20 ${className}`}
+    >
+      <ArrowUpDown className={`${compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} shrink-0 text-violet-300`} aria-hidden="true" />
+      <span className="sr-only">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-label={label}
+        style={{ colorScheme: 'dark' }}
+        className="h-full min-w-0 cursor-pointer appearance-none bg-transparent pr-6 text-xs font-semibold text-white outline-none"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value} className="bg-[#19191f] text-white">
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className={`pointer-events-none absolute right-2 ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} text-white/45`} aria-hidden="true" />
+    </label>
   );
 }
 

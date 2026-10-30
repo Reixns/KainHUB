@@ -656,3 +656,16 @@ export function saveState(state) {
     }
   } catch {}
 }
+
+export function replaceCachedPosts(posts) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+    if (!saved) return;
+    const next = JSON.stringify({ ...saved, posts: Array.isArray(posts) ? posts : [] });
+    if (next !== localStorage.getItem(STORAGE_KEY)) {
+      localStorage.setItem(STORAGE_KEY, next);
+    }
+  } catch (error) {
+    console.error('[kainhub] failed to synchronize cached posts with Supabase:', error);
+  }
+}

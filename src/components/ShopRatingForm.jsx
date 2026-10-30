@@ -1,18 +1,24 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { Star } from 'lucide-react';
 import { Button } from '@/components/UI';
+import { FIELD_CHAR_LIMITS, countCharacters } from '@/lib/textLimits';
 
 export default function ShopRatingForm({ order, savedRating, shop, rateShop, dark = false }) {
   const [selected, setSelected] = useState(0);
+  const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const commentId = useId();
+  const commentCountId = useId();
+  const commentCharacters = countCharacters(comment);
+  const commentOverLimit = commentCharacters > FIELD_CHAR_LIMITS.ratingComment;
 
   const submitRating = async () => {
-    if (!selected || saving || savedRating) return;
+    if (!selected || saving || savedRating || commentOverLimit) return;
     setSaving(true);
     setError('');
     try {
-      const result = await rateShop(order.id, selected);
+      const result = await rateShop(order.id, selected, comment);
       if (!result.success) setError(result.message);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Unable to save your rating.');
@@ -51,6 +57,13 @@ export default function ShopRatingForm({ order, savedRating, shop, rateShop, dar
         )}
       </div>
 
+      {savedRating?.comment && (
+        <div className={`mt-3 rounded-control border px-3 py-2 text-sm ${dark ? 'border-white/10 bg-white/5 text-white/75' : 'border-hairline bg-surface-sunken text-body'}`}>
+          <div className={`text-xs font-medium ${dark ? 'text-white/50' : 'text-muted'}`}>Your comment</div>
+          <p className="mt-0.5 whitespace-pre-wrap">{savedRating.comment}</p>
+        </div>
+      )}
+
       {!savedRating && (
         <>
           <div className="mt-3 flex items-center gap-1" role="group" aria-label="Choose a rating from 1 to 5 stars">
@@ -71,10 +84,32 @@ export default function ShopRatingForm({ order, savedRating, shop, rateShop, dar
               </button>
             ))}
           </div>
+          <div className="mt-3">
+            <label htmlFor={commentId} className={`block text-sm font-medium ${dark ? 'text-white/75' : 'text-body'}`}>
+              Comment <span className={dark ? 'font-normal text-white/45' : 'font-normal text-muted'}>(optional)</span>
+            </label>
+            <textarea
+              id={commentId}
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              maxLength={FIELD_CHAR_LIMITS.ratingComment}
+              rows={3}
+              aria-describedby={commentCountId}
+              placeholder="Tell the shop what stood out about your order."
+              className={`mt-1.5 w-full resize-none rounded-control border px-3 py-2 text-sm outline-none ${
+                dark
+                  ? 'border-white/15 bg-white/10 text-white placeholder:text-white/40 focus-visible:ring-2 focus-visible:ring-white/30'
+                  : 'border-hairline bg-white text-ink placeholder:text-subtle focus-visible:ring-2 focus-visible:ring-brand'
+              }`}
+            />
+            <p id={commentCountId} className={`mt-1 text-right text-xs ${dark ? 'text-white/45' : 'text-muted'}`} aria-live="polite">
+              {commentCharacters}/{FIELD_CHAR_LIMITS.ratingComment} characters
+            </p>
+          </div>
           <Button
             className="mt-3"
             size="sm"
-            disabled={!selected || saving}
+            disabled={!selected || saving || commentOverLimit}
             loading={saving}
             onClick={submitRating}
           >

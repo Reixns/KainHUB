@@ -1,10 +1,14 @@
 export function getPasswordRequirements(password, context = {}) {
   const value = String(password || '');
-  const lowerValue = value.toLowerCase();
-  const emailPrefix = String(context.email || '').split('@')[0]?.toLowerCase() || '';
-  const nameFragment = String(context.fullName || context.ownerName || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
+  const normalize = (text) => String(text || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normalizedPassword = normalize(value);
+  const email = String(context.email || '').trim().toLowerCase();
+  const emailLocalPart = email.split('@')[0] || '';
+  const personalInfo = [
+    normalize(email),
+    ...emailLocalPart.split(/[^a-z0-9]+/),
+    ...String(context.fullName || context.ownerName || '').split(/[^a-z0-9]+/i).map(normalize),
+  ].filter((fragment) => fragment.length >= 3);
 
   return [
     { id: 'length', label: 'At least 8 characters', valid: value.length >= 8 },
@@ -16,8 +20,7 @@ export function getPasswordRequirements(password, context = {}) {
     {
       id: 'personal-info',
       label: "Can't include your name or email address",
-      valid: (!emailPrefix || emailPrefix.length < 4 || !lowerValue.includes(emailPrefix))
-        && (!nameFragment || nameFragment.length < 3 || !lowerValue.includes(nameFragment)),
+      valid: !personalInfo.some((fragment) => normalizedPassword.includes(fragment)),
     },
     { id: 'repeated', label: 'Avoid repeating a character 3 or more times', valid: !/(.)\1{2,}/.test(value) },
   ];

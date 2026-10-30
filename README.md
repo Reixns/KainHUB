@@ -57,13 +57,13 @@ that uses it and its role in the workflow.
 See [`DATABASE_DESIGN.md`](./DATABASE_DESIGN.md) for portal-by-portal data
 flows, access notes, entity relationships, and the field/type dictionary.
 Existing marketplace table names are retained for compatibility with the app.
-Database triggers record cross-portal changes in `activity_logs`, which is
-readable only by admins and powers the Admin Audit Logs page.
 
 Run [`supabase/schema.sql`](./supabase/schema.sql) in the Supabase SQL Editor
 to create or reconcile the complete schema, including role-specific profile
-tables, data backfill, activity audit trail, RLS policies, and the compatibility
-trigger. The old
+tables, data backfill, RLS policies, and the compatibility trigger. The script
+also removes the retired `activity_logs` audit table and its historical data.
+It installs the authenticated Marketplace comment RPCs used to add and delete
+comments on posts. The old
 `profiles` detail columns remain synchronized so deployed older clients
 continue working; do not remove them until those clients have been retired.
 

@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { nextLocalId, normalizeChats } from '@/context/persistence';
-import { countWords, WORD_LIMIT, wordLimitMessage } from '@/lib/textLimits';
+import { isWithinMessageLimits, messageLimitMessage } from '@/lib/textLimits';
 
 const appendMessage = (chats, { chatId, vendorId, customerId, message }) => {
   const existing = chats.find(
@@ -113,8 +113,8 @@ export function useChatActions({ chats, setChats, auth, vendors, persistMessage,
     if ((!body && !image) || !auth.user) return;
     // Defence in depth: the composer blocks an over-limit draft, but every send
     // path (text, image caption, quick reply) funnels through here.
-    if (body && countWords(body) > WORD_LIMIT) {
-      showToast(wordLimitMessage(), 'error');
+    if (body && !isWithinMessageLimits(body)) {
+      showToast(messageLimitMessage(), 'error');
       return;
     }
     const senderRole = auth.role;

@@ -18,6 +18,7 @@ import { Button, Input, PlatformLogo } from '@/components/UI';
 import { validatePassword } from '@/lib/supabase';
 import { isValidMobile, mobileValidationMessage, sanitizeMobile, MOBILE_LENGTH } from '@/lib/mobile';
 import PasswordRequirements from '@/components/PasswordRequirements';
+import { FIELD_CHAR_LIMITS, findCharacterLimitViolation, characterLimitMessage } from '@/lib/textLimits';
 
 export default function CustomerRegister() {
   const { registerCustomer, platformSettings } = useApp();
@@ -43,6 +44,11 @@ export default function CustomerRegister() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     const errs = {};
+    const violation = findCharacterLimitViolation(form, {
+      fullName: FIELD_CHAR_LIMITS.fullName,
+      address: FIELD_CHAR_LIMITS.address,
+    });
+    if (violation) errs[violation.field] = characterLimitMessage(violation.limit);
     const emailValue = form.email.trim();
     const emailParts = emailValue.split('@');
     if (!form.fullName.trim()) errs.fullName = 'Full name required';
@@ -132,10 +138,10 @@ export default function CustomerRegister() {
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <Input label="Full name" icon={User} value={form.fullName} onChange={updateField('fullName')} error={errors.fullName} placeholder="Juan Dela Cruz" autoComplete="name" required className="register-input lg:!py-2" />
+                  <Input label="Full name" icon={User} value={form.fullName} onChange={updateField('fullName')} error={errors.fullName} maxLength={FIELD_CHAR_LIMITS.fullName} placeholder="Juan Dela Cruz" autoComplete="name" required className="register-input lg:!py-2" />
                   <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={form.mobile} onChange={(e) => setForm((current) => ({ ...current, mobile: sanitizeMobile(e.target.value) }))} error={errors.mobile} placeholder="09171234567" autoComplete="tel" required className="register-input lg:!py-2" />
                   <Input label="Email address" icon={Mail} type="email" value={form.email} onChange={updateField('email')} error={errors.email} placeholder="you@example.com" autoComplete="email" required className="register-input sm:col-span-2 lg:col-span-1 lg:!py-2" />
-                  <Input label="Zone 1 address" icon={MapPin} value={form.address} onChange={updateField('address')} error={errors.address} placeholder="Block X Lot Y, Lancaster Zone 1" autoComplete="street-address" required className="register-input sm:col-span-2 lg:col-span-1 lg:!py-2" />
+                  <Input label="Zone 1 address" icon={MapPin} value={form.address} onChange={updateField('address')} error={errors.address} maxLength={FIELD_CHAR_LIMITS.address} placeholder="Block X Lot Y, Lancaster Zone 1" autoComplete="street-address" required className="register-input sm:col-span-2 lg:col-span-1 lg:!py-2" />
                 </div>
               </section>
 

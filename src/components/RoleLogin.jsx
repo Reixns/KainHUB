@@ -52,6 +52,16 @@ function createCaptcha() {
 const formatClock = (seconds) =>
   `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
+// The second wrong answer in a tier is the first real sign of a run of failures,
+// so the account owner is notified before the account actually locks on the
+// third. The same point repeats in every later tier (5, 8, ...).
+const isRepeatedAttempt = (attempts) => {
+  const count = Number(attempts);
+  return Number.isFinite(count)
+    && count >= 2
+    && count % MAX_LOGIN_ATTEMPTS === MAX_LOGIN_ATTEMPTS - 1;
+};
+
 // Shared by the customer, vendor, and admin login pages. Each portal supplies
 // only its own branding, copy, and post-login redirect via `config`.
 //
@@ -93,6 +103,7 @@ export default function RoleLogin({ config }) {
   const [lockUntil, setLockUntil] = useState(0);
   const [lockRemaining, setLockRemaining] = useState(0);
   const [accountLocked, setAccountLocked] = useState(false);
+  const [oldPassword, setOldPassword] = useState(null);
 
   /*
     Re-read the stored streak whenever the account being typed changes, which is
@@ -105,6 +116,7 @@ export default function RoleLogin({ config }) {
     setFailedAttempts(stored.fails);
     setLockUntil(stored.lockUntil);
     setAccountLocked(false);
+    setOldPassword(null);
   }, [email, role]);
 
   // Counts the lock down from wall-clock time, so it cannot drift or be reset by
@@ -157,6 +169,7 @@ export default function RoleLogin({ config }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setOldPassword(null);
 
     const lockedFor = lockoutSecondsRemaining(lockUntil);
     if (lockedFor > 0) {
@@ -178,6 +191,9 @@ export default function RoleLogin({ config }) {
     setLoading(true);
     try {
       const result = await login(email, password, role);
+      if (!result.success && result.oldPassword) {
+        setOldPassword({ changedAt: result.oldPasswordChangedAt || null });
+      }
       if (result.success) {
         clearLockout(role, email);
         setFailedAttempts(0);
@@ -194,21 +210,31 @@ export default function RoleLogin({ config }) {
         } else {
           const seconds = Math.max(0, Number(result.secondsRemaining) || 0);
           setAccountLocked(false);
-          setFailedAttempts(Number(result.failedAttempts) || 0);
+          setFailedAttempts(Number(result.failedAttempts) || MAX_LOGIN_ATTEMPTS);
           setLockUntil(Date.now() + seconds * 1000);
           setError('');
         }
-        notifyFailedLogin(email, role);
+        // A migrated database wrote the account owner's row itself (alerted:
+        // true). An older schema has no such flag and still needs the local fallback.
+        if (result.alerted !== true) {
+          notifyFailedLogin(email, role, {
+            attempts: Number(result.failedAttempts) || MAX_LOGIN_ATTEMPTS,
+            locked: true,
+            permanent: Boolean(result.permanent),
+          });
+        }
         resetCaptcha();
       } else if (!result.countAttempt) {
         setError(`${result.message || 'Unable to sign in.'} This did not count as a failed password attempt.`);
         resetCaptcha();
       } else if (typeof result.failedAttempts === 'number') {
         // Database-authoritative streak and tiers: the server already decided
-        // there is no lock this time, so only the counter needs reflecting.
+        // there is no lock this time.
         setFailedAttempts(result.failedAttempts);
-        const remaining = Number(result.attemptsRemaining) || 0;
-        setError(`${result.message || 'Invalid email or password.'} ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`);
+        if (isRepeatedAttempt(result.failedAttempts) && result.alerted !== true) {
+          notifyFailedLogin(email, role, { attempts: result.failedAttempts, locked: false });
+        }
+        setError(result.message || 'Invalid email or password.');
         resetCaptcha();
       } else {
         const attempt = registerFailedAttempt(role, email);
@@ -216,13 +242,16 @@ export default function RoleLogin({ config }) {
         setLockUntil(attempt.lockUntil);
 
         if (attempt.lockedOut) {
-          notifyFailedLogin(email, role);
+          notifyFailedLogin(email, role, { attempts: attempt.fails, locked: true, permanent: false });
           setError(
             `Too many failed attempts. This account is now locked for ${formatClock(lockoutSecondsForTier(attempt.tier))}. `
-            + 'Every further set of wrong answers adds five more minutes.'
+            + 'Later lockouts may last longer.'
           );
         } else {
-          setError(`${result.message || 'Unable to sign in.'} ${attempt.attemptsRemaining} attempt${attempt.attemptsRemaining === 1 ? '' : 's'} remaining.`);
+          if (isRepeatedAttempt(attempt.fails)) {
+            notifyFailedLogin(email, role, { attempts: attempt.fails, locked: false });
+          }
+          setError(result.message || 'Invalid email or password.');
         }
 
         resetCaptcha();
@@ -235,13 +264,21 @@ export default function RoleLogin({ config }) {
     }
   };
 
-  // Filled dots for wrong answers already spent in this tier. While locked the
-  // tier is always shown full, because the stored streak has just wrapped to a
-  // multiple of the limit and would otherwise render as zero.
-  const strikes = lockRemaining > 0
+  const locked = lockRemaining > 0 || accountLocked;
+  const attemptsInCycle = locked
     ? MAX_LOGIN_ATTEMPTS
     : failedAttempts % MAX_LOGIN_ATTEMPTS;
-  const locked = lockRemaining > 0 || accountLocked;
+  const attemptsRemaining = MAX_LOGIN_ATTEMPTS - attemptsInCycle;
+  const attemptsTone = attemptsInCycle >= MAX_LOGIN_ATTEMPTS
+    ? 'danger'
+    : attemptsInCycle > 0
+      ? 'warning'
+      : 'default';
+  const oldPasswordChangedLabel = (() => {
+    if (!oldPassword?.changedAt) return '';
+    const changedAt = new Date(oldPassword.changedAt);
+    return Number.isNaN(changedAt.getTime()) ? '' : changedAt.toLocaleString();
+  })();
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#101014] text-white">
@@ -287,10 +324,6 @@ export default function RoleLogin({ config }) {
               ))}
             </ul>
 
-            <p className="mt-4 max-w-md rounded-2xl border border-white/10 bg-white/[0.045] px-3 py-2 text-xs leading-4 text-white/55">
-              Repeated wrong passwords lock an account for five more minutes each time, and every
-              lockout is recorded for the platform owner.
-            </p>
             <Link
               to="/"
               className="mt-3 inline-flex min-h-8 items-center gap-1 rounded-control px-1 text-xs font-medium text-white/50 transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-300"
@@ -442,29 +475,86 @@ export default function RoleLogin({ config }) {
                   </p>
                 </div>
 
-                {!locked && (
-                  <div className="flex items-center gap-2 text-[11px] text-white/45">
-                    <span className="flex items-center gap-1" aria-hidden="true">
-                      {Array.from({ length: MAX_LOGIN_ATTEMPTS }).map((_, index) => (
-                        <span
-                          key={index}
-                          className={`h-1.5 w-4 rounded-full ${index < strikes ? 'bg-danger' : 'bg-white/15'}`}
-                        />
-                      ))}
+                <div
+                  className={`rounded-xl border px-3 py-2 ${
+                    attemptsTone === 'danger'
+                      ? 'border-danger/30 bg-danger/5'
+                      : attemptsTone === 'warning'
+                        ? 'border-amber-300/20 bg-amber-300/[0.04]'
+                        : 'border-white/10 bg-white/[0.035]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-white/55">
+                      Failed attempts
                     </span>
-                    <span>
-                      {strikes === 0
-                        ? `${MAX_LOGIN_ATTEMPTS} wrong answers lock this account`
-                        : `${MAX_LOGIN_ATTEMPTS - strikes} more wrong answer${MAX_LOGIN_ATTEMPTS - strikes === 1 ? '' : 's'} and this account locks`}
+                    <span
+                      className={`text-xs font-semibold tabular-nums ${
+                        attemptsTone === 'danger'
+                          ? 'text-red-300'
+                          : attemptsTone === 'warning'
+                            ? 'text-amber-200'
+                            : 'text-violet-200'
+                      }`}
+                    >
+                      {attemptsInCycle} / {MAX_LOGIN_ATTEMPTS}
                     </span>
                   </div>
-                )}
+                  <div
+                    role="progressbar"
+                    aria-label="Failed sign-in attempts in the current cycle"
+                    aria-valuemin={0}
+                    aria-valuemax={MAX_LOGIN_ATTEMPTS}
+                    aria-valuenow={attemptsInCycle}
+                    aria-valuetext={`${attemptsInCycle} of ${MAX_LOGIN_ATTEMPTS} failed attempts`}
+                    className="mt-2 flex gap-1.5"
+                  >
+                    {Array.from({ length: MAX_LOGIN_ATTEMPTS }).map((_, index) => (
+                      <span
+                        key={index}
+                        aria-hidden="true"
+                        className={`h-1.5 flex-1 rounded-full ${
+                          index < attemptsInCycle
+                            ? attemptsTone === 'danger'
+                              ? 'bg-danger'
+                              : attemptsTone === 'warning'
+                                ? 'bg-amber-300'
+                                : 'bg-violet-300'
+                            : 'bg-white/15'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <p aria-live="polite" className="mt-1.5 text-[11px] leading-4 text-white/45">
+                    {locked
+                      ? accountLocked
+                        ? 'This account is permanently locked. Recover it by email.'
+                        : 'This account is temporarily locked.'
+                      : `${attemptsRemaining} ${attemptsRemaining === 1 ? 'attempt' : 'attempts'} before the next lock.`}
+                  </p>
+                </div>
 
                 {/*
                   role="alert" so a failed sign-in is announced rather than
                   appearing silently below the fold.
                 */}
-                {error && (
+                {oldPassword && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-control border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200"
+                  >
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>
+                      <span className="font-semibold">This is an old password.</span>
+                      {oldPasswordChangedLabel
+                        ? ` It was changed on ${oldPasswordChangedLabel}.`
+                        : ' This password was changed previously.'}
+                      {' '}Use your current password, or reset it if you have forgotten it.
+                    </span>
+                  </div>
+                )}
+
+                {error && !oldPassword && (
                   <div
                     role="alert"
                     className="flex items-start gap-2 rounded-control border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-red-300"

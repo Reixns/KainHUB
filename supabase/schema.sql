@@ -8,22 +8,24 @@
 --   This is the canonical full-schema script for fresh and existing databases.
 --   It creates/backfills role-specific profiles and reconciles active tables
 --   inside a single transaction; any failure rolls the transaction back. It
---   also permanently drops the specific legacy objects listed below.
+--   also drops the retired objects listed below and the activity log table.
 --   Review/backup those objects before running this full script.
 --
---   It does not truncate active portal tables or remove account/order/shop
---   records. The objects it drops are the retired table/columns listed below,
---   plus the temporary `_canonical_columns` table. It never weakens RLS.
+--   It does not remove portal accounts, orders, or shops. It drops the retired
+--   table/columns listed below, the activity log table and the temporary
+--   `_canonical_columns` table. It never weakens RLS.
 --
 -- DEPLOY ORDER
 --   This script keeps legacy profile columns synchronized so older clients
 --   remain compatible. Deploy the matching frontend to use role-profile reads
 --   and writes. The script also retires the unrelated legacy objects below.
 --
--- RETIRED OBJECTS  (dropped by section 6, after their data is merged)
+-- RETIRED OBJECTS  (legacy objects dropped after any needed data is merged)
 --   post_comments
 --       A second comment store the app never used. Post comments live in the
 --       `posts.comments` jsonb column, which is what every feed screen reads.
+--   activity_logs
+--       Cross-portal audit history is no longer stored by this application.
 --   vendors.category_id
 --       A generated slug next to `vendors.category`; no code ever read it.
 --   posts.likes
@@ -68,7 +70,7 @@
 --   ADMIN           profiles -> admin_profiles -> vendors -> menu_items -> orders
 --                   -> order_items -> posts -> notifications
 --   SHARED FEATURES posts, chats, notifications
---   ADMIN ACTIVITY activity_logs (database-recorded actions across portals)
+--   MODERATION     account_reports (authenticated account reports, admin-reviewed)
 --
 --   Order snapshots (`orders.customer_name/mobile/address`, and the item name
 --   and price on `order_items`) intentionally keep purchase-time values even
@@ -109,6 +111,33 @@
 -- =============================================================================
 
 begin;
+
+-- Retire the database audit trail before any backfills or migrations can fire
+-- its old triggers. The table contents are intentionally discarded.
+do $$
+declare
+  activity_trigger record;
+begin
+  for activity_trigger in
+    select n.nspname as schema_name, c.relname as table_name, t.tgname as trigger_name
+    from pg_trigger t
+    join pg_class c on c.oid = t.tgrelid
+    join pg_namespace n on n.oid = c.relnamespace
+    where not t.tgisinternal
+      and n.nspname = 'public'
+      and t.tgname = 'activity_log_row_change'
+  loop
+    execute format(
+      'drop trigger %I on %I.%I',
+      activity_trigger.trigger_name,
+      activity_trigger.schema_name,
+      activity_trigger.table_name
+    );
+  end loop;
+end $$;
+
+drop function if exists public.log_portal_activity();
+drop table if exists public.activity_logs;
 
 -- -----------------------------------------------------------------------------
 -- 1. Extensions and enum types
@@ -196,7 +225,7 @@ create table if not exists public.admin_profiles (
 -- can read or change it.
 --
 -- The lock escalates in tiers of three wrong passwords: the first three wait
--- five minutes, the next three wait ten, and the ninth is a permanent lock that
+-- three minutes, the next three wait five, and the ninth is a permanent lock that
 -- only an email-confirmed password reset clears. Timed locks leave the streak
 -- intact (failed_attempts keeps climbing), so the next tier cannot be dodged by
 -- waiting out a lock.
@@ -302,6 +331,7 @@ create table if not exists public.shop_ratings (
   customer_id uuid not null references public.profiles(id) on delete cascade,
   vendor_legacy_id bigint not null,
   rating integer not null check (rating between 1 and 5),
+  comment_text text not null default '' check (char_length(comment_text) <= 300),
   created_at timestamptz not null default now()
 );
 
@@ -332,33 +362,10 @@ create table if not exists public.posts (
   updated_at timestamptz not null default now()
 );
 
--- One definition of a "word" for the 100-word limits enforced on posts,
--- comments and chat messages. Counts whitespace-separated runs, so a blank
--- string is 0 rather than 1 and trailing/leading spaces do not count.
---
--- Trims every kind of whitespace, not just spaces: btrim() with no second
--- argument only strips spaces, so a message padded with tabs or newlines was
--- split on its edges and counted extra empty words that the browser's
--- String.trim() never produces. Both sides now count the same words.
-create or replace function public.count_words(value text)
-returns integer
-language sql
-immutable
-set search_path = public, pg_temp
-as $$
-  with trimmed as (
-    select regexp_replace(coalesce(value, ''), '^[[:space:]]+|[[:space:]]+$', '', 'g') as text
-  )
-  select case
-    when trimmed.text = '' then 0
-    else array_length(regexp_split_to_array(trimmed.text, '[[:space:]]+'), 1)
-  end
-  from trimmed;
-$$;
-
 /*
-  Enforce the word limit at the database, not only in the browser: the app talks
-  to Supabase directly with the anon key, so a client-side check is advisory.
+  Enforce the 20-word and 200-character limit at the database, not only in the
+  browser: the app talks to Supabase directly with the anon key, so client checks
+  are advisory.
 
   Backwards compatible by design. Existing over-limit posts stay readable, and
   only rows whose text actually changes are validated:
@@ -367,37 +374,61 @@ $$;
       not already on the row (i.e. newly added ones). A like, a pin, or a new
       comment on a legacy long post therefore still succeeds.
 */
-create or replace function public.enforce_post_word_limit()
+drop trigger if exists posts_enforce_word_limit on public.posts;
+drop trigger if exists posts_enforce_character_limit on public.posts;
+drop function if exists public.enforce_post_word_limit();
+drop function if exists public.count_words(text);
+
+create or replace function public.count_words(value text)
+returns integer
+language sql
+immutable
+set search_path = public, pg_temp
+as $$
+  select count(*)::integer
+  from regexp_split_to_table(
+    regexp_replace(coalesce(value, ''), '^[[:space:]]+|[[:space:]]+$', '', 'g'),
+    '[[:space:]]+'
+  ) as tokens(token)
+  where tokens.token <> ''
+    and tokens.token ~ '[[:alnum:]]';
+$$;
+
+create or replace function public.enforce_post_character_limit()
 returns trigger
 language plpgsql
 set search_path = public, pg_temp
 as $$
 declare
   comment_item jsonb;
-  old_comment_ids jsonb := '[]'::jsonb;
 begin
   if tg_op = 'INSERT' then
-    if public.count_words(new.content) > 100 then
-      raise exception 'Posts are limited to 100 words' using errcode = '22001';
+    if public.count_words(new.content) > 20 or char_length(new.content) > 200 then
+      raise exception 'Posts are limited to 20 words and 200 characters' using errcode = '22001';
     end if;
   elsif new.content is distinct from old.content then
-    if public.count_words(new.content) > 100 then
-      raise exception 'Posts are limited to 100 words' using errcode = '22001';
+    if public.count_words(new.content) > 20 or char_length(new.content) > 200 then
+      raise exception 'Posts are limited to 20 words and 200 characters' using errcode = '22001';
     end if;
   end if;
 
   if jsonb_typeof(new.comments) = 'array' then
-    if tg_op = 'UPDATE' and jsonb_typeof(old.comments) = 'array' then
-      select coalesce(jsonb_agg(entry ->> 'id'), '[]'::jsonb)
-        into old_comment_ids
-        from jsonb_array_elements(old.comments) entry;
-    end if;
-
     for comment_item in select * from jsonb_array_elements(new.comments) loop
-      if not old_comment_ids ? coalesce(comment_item ->> 'id', '') then
-        if public.count_words(comment_item ->> 'content') > 100 then
-          raise exception 'Comments are limited to 100 words' using errcode = '22001';
+      if tg_op = 'INSERT' then
+        if public.count_words(comment_item ->> 'content') > 20
+           or char_length(comment_item ->> 'content') > 200 then
+          raise exception 'Comments are limited to 20 words and 200 characters' using errcode = '22001';
         end if;
+      elsif not exists (
+        select 1
+        from jsonb_array_elements(coalesce(old.comments, '[]'::jsonb)) old_comment
+        where old_comment ->> 'id' = comment_item ->> 'id'
+          and old_comment ->> 'content' is not distinct from comment_item ->> 'content'
+      ) and (
+        public.count_words(comment_item ->> 'content') > 20
+        or char_length(comment_item ->> 'content') > 200
+      ) then
+        raise exception 'Comments are limited to 20 words and 200 characters' using errcode = '22001';
       end if;
     end loop;
   end if;
@@ -406,10 +437,138 @@ begin
 end;
 $$;
 
-drop trigger if exists posts_enforce_word_limit on public.posts;
-create trigger posts_enforce_word_limit
+create trigger posts_enforce_character_limit
   before insert or update of content, comments on public.posts
-  for each row execute function public.enforce_post_word_limit();
+  for each row execute function public.enforce_post_character_limit();
+
+-- Bound user-authored identity, catalog and order text at the database too.
+-- Only changed fields are checked on UPDATE so legacy rows do not prevent
+-- unrelated edits while all new writes use the same ceilings as the UI.
+create or replace function public.enforce_profile_and_catalog_character_limits()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+declare
+  old_row jsonb := '{}'::jsonb;
+  new_row jsonb := to_jsonb(new);
+  field_name text;
+  field_char_limit integer;
+begin
+  if tg_op = 'UPDATE' then
+    old_row := to_jsonb(old);
+  end if;
+
+  if tg_table_name in ('profiles', 'customer_profiles', 'vendor_profiles', 'admin_profiles') then
+    for field_name, field_char_limit in
+      select * from (values ('full_name', 60), ('address', 120)) as limits(field_name, field_char_limit)
+    loop
+      if (tg_op = 'INSERT' or new_row ->> field_name is distinct from old_row ->> field_name)
+         and char_length(new_row ->> field_name) > field_char_limit then
+        raise exception '% is limited to % characters', replace(field_name, '_', ' '), field_char_limit
+          using errcode = '22001';
+      end if;
+    end loop;
+  elsif tg_table_name = 'vendors' then
+    for field_name, field_char_limit in
+      select * from (values
+        ('name', 80), ('owner_name', 60), ('address', 120),
+        ('category', 40), ('operating_hours', 80), ('description', 500)
+      ) as limits(field_name, field_char_limit)
+    loop
+      if (tg_op = 'INSERT' or new_row ->> field_name is distinct from old_row ->> field_name)
+         and char_length(new_row ->> field_name) > field_char_limit then
+        raise exception '% is limited to % characters', replace(field_name, '_', ' '), field_char_limit
+          using errcode = '22001';
+      end if;
+    end loop;
+  elsif tg_table_name = 'menu_items' then
+    for field_name, field_char_limit in
+      select * from (values ('name', 160), ('description', 900), ('category', 60)) as limits(field_name, field_char_limit)
+    loop
+      if (tg_op = 'INSERT' or new_row ->> field_name is distinct from old_row ->> field_name)
+         and char_length(new_row ->> field_name) > field_char_limit then
+        raise exception '% is limited to % characters', replace(field_name, '_', ' '), field_char_limit
+          using errcode = '22001';
+      end if;
+    end loop;
+  elsif tg_table_name = 'orders' then
+    for field_name, field_char_limit in
+      select * from (values
+        ('customer_name', 60), ('customer_address', 120),
+        ('special_instructions', 900), ('reject_reason', 900)
+      ) as limits(field_name, field_char_limit)
+    loop
+      if (tg_op = 'INSERT' or new_row ->> field_name is distinct from old_row ->> field_name)
+         and char_length(new_row ->> field_name) > field_char_limit then
+        raise exception '% is limited to % characters', replace(field_name, '_', ' '), field_char_limit
+          using errcode = '22001';
+      end if;
+    end loop;
+  elsif tg_table_name = 'order_items' then
+    for field_name, field_char_limit in
+      select * from (values ('name', 160), ('notes', 600)) as limits(field_name, field_char_limit)
+    loop
+      if (tg_op = 'INSERT' or new_row ->> field_name is distinct from old_row ->> field_name)
+         and char_length(new_row ->> field_name) > field_char_limit then
+        raise exception '% is limited to % characters', replace(field_name, '_', ' '), field_char_limit
+          using errcode = '22001';
+      end if;
+    end loop;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_enforce_text_word_limits on public.profiles;
+drop trigger if exists profiles_enforce_text_character_limits on public.profiles;
+create trigger profiles_enforce_text_character_limits
+  before insert or update on public.profiles
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists customer_profiles_enforce_text_word_limits on public.customer_profiles;
+drop trigger if exists customer_profiles_enforce_text_character_limits on public.customer_profiles;
+create trigger customer_profiles_enforce_text_character_limits
+  before insert or update on public.customer_profiles
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists vendor_profiles_enforce_text_word_limits on public.vendor_profiles;
+drop trigger if exists vendor_profiles_enforce_text_character_limits on public.vendor_profiles;
+create trigger vendor_profiles_enforce_text_character_limits
+  before insert or update on public.vendor_profiles
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists admin_profiles_enforce_text_word_limits on public.admin_profiles;
+drop trigger if exists admin_profiles_enforce_text_character_limits on public.admin_profiles;
+create trigger admin_profiles_enforce_text_character_limits
+  before insert or update on public.admin_profiles
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists vendors_enforce_text_word_limits on public.vendors;
+drop trigger if exists vendors_enforce_text_character_limits on public.vendors;
+create trigger vendors_enforce_text_character_limits
+  before insert or update on public.vendors
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists menu_items_enforce_text_word_limits on public.menu_items;
+drop trigger if exists menu_items_enforce_text_character_limits on public.menu_items;
+create trigger menu_items_enforce_text_character_limits
+  before insert or update on public.menu_items
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists orders_enforce_text_word_limits on public.orders;
+drop trigger if exists orders_enforce_text_character_limits on public.orders;
+create trigger orders_enforce_text_character_limits
+  before insert or update on public.orders
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
+
+drop trigger if exists order_items_enforce_text_word_limits on public.order_items;
+drop trigger if exists order_items_enforce_text_character_limits on public.order_items;
+drop function if exists public.enforce_profile_and_catalog_word_limits();
+create trigger order_items_enforce_text_character_limits
+  before insert or update on public.order_items
+  for each row execute function public.enforce_profile_and_catalog_character_limits();
 
 -- A favourite has no surrogate key on purpose: the row is the triple
 -- (owner, kind, target) and nothing else. The browser keeps the same shape with
@@ -454,21 +613,24 @@ create table if not exists public.chats (
   updated_at timestamptz not null default now()
 );
 
--- Immutable workflow events; payloads store changed field names and safe
--- workflow values only, never profile details, chat contents, or order PII.
-create table if not exists public.activity_logs (
+create table if not exists public.account_reports (
   id bigint generated by default as identity primary key,
-  actor_id uuid,
-  actor_role public.app_role,
-  action text not null,
-  entity_type text not null,
-  entity_id text,
-  details jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  reporter_id uuid references public.profiles(id) on delete set null,
+  account_id uuid not null,
+  account_type text not null check (account_type in ('customer', 'vendor')),
+  reason text not null check (reason in ('Spam', 'Scam', 'Inappropriate', 'Impersonation', 'Harassment', 'Other')),
+  status text not null default 'open' check (status in ('open', 'resolved')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid references public.profiles(id) on delete set null
 );
 
-create index if not exists activity_logs_created_at_idx
-  on public.activity_logs (created_at desc);
+create unique index if not exists account_reports_one_open_per_reporter_idx
+  on public.account_reports (reporter_id, account_id)
+  where status = 'open' and reporter_id is not null;
+
+create index if not exists account_reports_status_created_idx
+  on public.account_reports (status, created_at desc);
 
 -- Descriptions show each table's portal flow and purpose in Supabase Table
 -- Editor without renaming tables the app already queries.
@@ -489,7 +651,7 @@ comment on table public.orders is
 comment on table public.order_items is
   '[CUSTOMER: ORDER HISTORY] [VENDOR: PREPARE] [ADMIN: REVIEW] Purchase-time item snapshots; order_id references orders.id.';
 comment on table public.shop_ratings is
-  '[CUSTOMER: RATE COMPLETED ORDER] Rating is written only through rate_completed_order; shop aggregate is stored on vendors.';
+  '[CUSTOMER: RATE COMPLETED ORDER] Rating and optional comment are written only through rate_completed_order; shop aggregate is stored on vendors.';
 comment on table public.posts is
   '[CUSTOMER: BROWSE] [VENDOR: PUBLISH] [ADMIN: MODERATE] Marketplace posts, likes and embedded comments.';
 comment on table public.favorites is
@@ -498,8 +660,8 @@ comment on table public.notifications is
   '[ALL PORTALS] Recipient-owned customer/vendor/admin alerts; admin desk alerts are stored per admin recipient.';
 comment on table public.chats is
   '[CUSTOMER + VENDOR] Conversation messages are ordered within a chat. Admin access follows the chat RLS policy.';
-comment on table public.activity_logs is
-  '[ADMIN: AUDIT] Append-only database activity from all portals. Admin-only read; stores safe changed-field metadata, not sensitive row contents.';
+comment on table public.account_reports is
+  '[CUSTOMER + VENDOR: SUBMIT] [ADMIN: REVIEW] Reports of customer/vendor accounts. Submission and resolution are restricted to validated RPCs; only admins can read.';
 
 -- -----------------------------------------------------------------------------
 -- 3. Canonical column inventory
@@ -653,6 +815,7 @@ insert into public._canonical_columns (tbl, col, typ) values
   ('shop_ratings',  'customer_id',    'uuid'),
   ('shop_ratings',  'vendor_legacy_id','bigint'),
   ('shop_ratings',  'rating',         'integer'),
+  ('shop_ratings',  'comment_text',   'text'),
   ('shop_ratings',  'created_at',     'timestamp with time zone'),
   -- posts: likes are the liked_by list, there is no separate counter
   ('posts',         'id',             'bigint generated by default as identity'),
@@ -704,15 +867,16 @@ insert into public._canonical_columns (tbl, col, typ) values
   ('favorites',     'target_legacy_id', 'bigint'),
   ('favorites',     'vendor_legacy_id', 'bigint'),
   ('favorites',     'created_at',       'timestamp with time zone'),
-  -- activity_logs: cross-portal workflow audit trail
-  ('activity_logs', 'id',          'bigint generated by default as identity'),
-  ('activity_logs', 'actor_id',    'uuid'),
-  ('activity_logs', 'actor_role',  'public.app_role'),
-  ('activity_logs', 'action',      'text'),
-  ('activity_logs', 'entity_type', 'text'),
-  ('activity_logs', 'entity_id',   'text'),
-  ('activity_logs', 'details',     'jsonb'),
-  ('activity_logs', 'created_at',  'timestamp with time zone'),
+  -- account_reports: submissions by users, read and resolved only by admins
+  ('account_reports', 'id',           'bigint generated by default as identity'),
+  ('account_reports', 'reporter_id',  'uuid'),
+  ('account_reports', 'account_id',   'uuid'),
+  ('account_reports', 'account_type', 'text'),
+  ('account_reports', 'reason',       'text'),
+  ('account_reports', 'status',       'text'),
+  ('account_reports', 'created_at',   'timestamp with time zone'),
+  ('account_reports', 'resolved_at',  'timestamp with time zone'),
+  ('account_reports', 'resolved_by',  'uuid'),
   -- login_attempts: tiered failed-sign-in lock state. Listed here so a database
   -- that ran an earlier version of this script picks up lock_tier / locked_until.
   ('login_attempts', 'user_id',         'uuid'),
@@ -786,6 +950,10 @@ alter table public.orders alter column special_instructions set default '';
 alter table public.orders alter column timeline set default '[]'::jsonb;
 
 alter table public.notifications alter column read set default false;
+
+update public.shop_ratings set comment_text = '' where comment_text is null;
+alter table public.shop_ratings alter column comment_text set default '';
+alter table public.shop_ratings alter column comment_text set not null;
 
 -- Separate lines for one dish may carry different customer notes. The old
 -- (order_id, menu_legacy_id) key collapsed those lines into one and made a
@@ -1124,117 +1292,9 @@ create or replace function public.is_admin() returns boolean
   select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin');
 $$;
 
-create or replace function public.log_portal_activity()
-returns trigger
-language plpgsql
-security definer
-set search_path = pg_catalog, public, auth, pg_temp
-as $$
-declare
-  actor uuid := auth.uid();
-  actor_role public.app_role;
-  old_row jsonb := '{}'::jsonb;
-  new_row jsonb := '{}'::jsonb;
-  current_row jsonb;
-  changed_fields jsonb;
-  before_values jsonb;
-  after_values jsonb;
-  record_id text;
-begin
-  if tg_op = 'UPDATE' then
-    if old is not distinct from new then
-      return new;
-    end if;
-    old_row := to_jsonb(old);
-    new_row := to_jsonb(new);
-    current_row := new_row;
-  elsif tg_op = 'DELETE' then
-    old_row := to_jsonb(old);
-    current_row := old_row;
-  else
-    new_row := to_jsonb(new);
-    current_row := new_row;
-  end if;
+drop function if exists public.rate_completed_order(text, integer);
 
-  if actor is not null then
-    select p.role into actor_role
-    from public.profiles p
-    where p.id = actor;
-  end if;
-
-  select coalesce(jsonb_agg(field_name order by field_name), '[]'::jsonb)
-  into changed_fields
-  from (
-    select key as field_name from jsonb_each(old_row)
-    union
-    select key as field_name from jsonb_each(new_row)
-  ) fields
-  where field_name <> 'updated_at'
-    and old_row -> field_name is distinct from new_row -> field_name;
-
-  if tg_op = 'UPDATE' and changed_fields = '[]'::jsonb then
-    return new;
-  end if;
-
-  select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
-  into before_values
-  from jsonb_each(old_row)
-  where key = any(array[
-    'status', 'store_status', 'available', 'stock', 'pinned', 'hidden',
-    'reported', 'read', 'role', 'fulfillment', 'payment_status', 'rating'
-  ]);
-
-  select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
-  into after_values
-  from jsonb_each(new_row)
-  where key = any(array[
-    'status', 'store_status', 'available', 'stock', 'pinned', 'hidden',
-    'reported', 'read', 'role', 'fulfillment', 'payment_status', 'rating'
-  ]);
-
-  record_id := case
-    when tg_table_name = 'orders' then current_row ->> 'order_number'
-    when tg_table_name = 'shop_ratings' then current_row ->> 'order_number'
-    when tg_table_name = 'favorites' then concat_ws(
-      ':',
-      current_row ->> 'user_id',
-      current_row ->> 'target_type',
-      current_row ->> 'target_legacy_id'
-    )
-    else coalesce(
-      current_row ->> 'id',
-      current_row ->> 'order_number',
-      current_row ->> 'user_id',
-      current_row ->> 'customer_id'
-    )
-  end;
-
-  insert into public.activity_logs (
-    actor_id, actor_role, action, entity_type, entity_id, details
-  )
-  values (
-    actor,
-    actor_role,
-    lower(tg_op),
-    tg_table_name,
-    record_id,
-    jsonb_build_object(
-      'changed_fields', changed_fields,
-      'before', before_values,
-      'after', after_values
-    )
-  );
-
-  if tg_op = 'DELETE' then
-    return old;
-  end if;
-  return new;
-end;
-$$;
-
-revoke all on function public.log_portal_activity() from public, anon, authenticated;
-
-create or replace function public.rate_completed_order(p_order_number text, p_rating integer)
+create or replace function public.rate_completed_order(p_order_number text, p_rating integer, p_comment text default '')
 returns jsonb
 language plpgsql
 security definer
@@ -1244,6 +1304,7 @@ declare
   v_vendor_legacy_id bigint;
   v_rating numeric(3,2);
   v_rating_count integer;
+  v_comment text := btrim(coalesce(p_comment, ''));
 begin
   if auth.uid() is null then
     raise exception 'Sign in as a customer to rate a shop.';
@@ -1257,6 +1318,9 @@ begin
   if p_rating is null or p_rating < 1 or p_rating > 5 then
     raise exception 'A shop rating must be between 1 and 5 stars.';
   end if;
+  if char_length(v_comment) > 300 then
+    raise exception 'A shop rating comment must be 300 characters or fewer.';
+  end if;
 
   select vendor_legacy_id into v_vendor_legacy_id
   from public.orders
@@ -1269,8 +1333,8 @@ begin
     raise exception 'Only your completed orders can be rated.';
   end if;
 
-  insert into public.shop_ratings (order_number, customer_id, vendor_legacy_id, rating)
-  values (p_order_number, auth.uid(), v_vendor_legacy_id, p_rating)
+  insert into public.shop_ratings (order_number, customer_id, vendor_legacy_id, rating, comment_text)
+  values (p_order_number, auth.uid(), v_vendor_legacy_id, p_rating, v_comment)
   on conflict (order_number) do nothing;
 
   if not found then
@@ -1292,15 +1356,40 @@ begin
 end;
 $$;
 
-revoke all on function public.rate_completed_order(text, integer) from public, anon;
-grant execute on function public.rate_completed_order(text, integer) to authenticated;
+revoke all on function public.rate_completed_order(text, integer, text) from public, anon;
+grant execute on function public.rate_completed_order(text, integer, text) to authenticated;
+
+/*
+  Safe, shared feedback feed for a shop. Both the customer-facing shop page and
+  the vendor's own profile read this, so it deliberately exposes only the star
+  rating, written comment, and timestamp -- never the customer id or order
+  number. The RPC is executable by any signed-in role; the BFF supplies the
+  matching customer or vendor session.
+*/
+create or replace function public.get_shop_rating_comments(p_vendor_legacy_id bigint)
+returns table (rating integer, comment_text text, created_at timestamptz)
+language sql
+stable
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+  select r.rating, r.comment_text, r.created_at
+  from public.shop_ratings r
+  where r.vendor_legacy_id = p_vendor_legacy_id
+    and char_length(btrim(r.comment_text)) > 0
+  order by r.created_at desc, r.order_number desc
+  limit 50;
+$$;
+
+revoke all on function public.get_shop_rating_comments(bigint) from public, anon;
+grant execute on function public.get_shop_rating_comments(bigint) to authenticated;
 
 /*
   Raise a notification for the admin desk.
 
-  Account alerts are raised by a customer or vendor -- a new registration, or a
-  lockout after repeated failed logins -- so nobody is signed in as an admin
-  when they are created and there is no admin id to address them to.
+  Registration alerts are raised before an admin is signed in, so there is no
+  admin id to address them to. Failed-login alerts are handled separately by
+  `record_failed_login` and go directly to the targeted account owner.
 
   This function is SECURITY DEFINER so it can read the admin ids that the
   caller's role cannot see, and it inserts the alert once per admin, so the row
@@ -1390,8 +1479,8 @@ end;
 $$;
 
 -- LOGIN LOCKOUT ----------------------------------------------------------------
--- Failed sign-in escalates in tiers of three wrong passwords: tier 1 waits five
--- minutes, tier 2 waits ten, and the third tier is a permanent lock. A timed
+-- Failed sign-in escalates in tiers of three wrong passwords: tier 1 waits three
+-- minutes, tier 2 waits five, and the third tier is a permanent lock. A timed
 -- lock is cleared when it expires; only a successful sign-in or an
 -- email-confirmed password reset (unlock_account) clears the streak itself.
 
@@ -1443,6 +1532,14 @@ grant execute on function public.login_status(text) to anon, authenticated;
 -- email to unlock" message. A call that arrives while a lock is already active is
 -- answered with the remaining time without moving the counter, so the timer
 -- cannot be reset by hammering the form.
+--
+-- The alert to the targeted account owner is written here, not by the browser.
+-- A failed sign-in has no session, so a client-side notification would live in
+-- the attacker's browser instead of reaching the account owner's inbox. This
+-- SECURITY DEFINER function is already the anon-callable authority on failed
+-- attempts, so it can securely insert a row for the matched profile UUID.
+-- `alerted` lets the client skip its local fallback when the server has already
+-- delivered the row.
 create or replace function public.record_failed_login(p_email text)
 returns jsonb
 language plpgsql
@@ -1451,9 +1548,9 @@ set search_path = public, pg_temp
 as $$
 declare
   attempts_per_tier constant integer := 3;
-  step_seconds      constant integer := 300;  -- tier 1 = 5 min, tier 2 = 10 min
   max_attempts      constant integer := 9;    -- the third tier is permanent
   target_id uuid;
+  target_role text;
   cur_attempts integer;
   cur_tier integer;
   cur_until timestamptz;
@@ -1463,8 +1560,12 @@ declare
   next_until timestamptz;
   next_locked_at timestamptz;
   next_reason text;
+  should_alert boolean;
+  alert_id bigint;
+  alert_title text;
+  alert_message text;
 begin
-  select id into target_id
+  select id, role::text into target_id, target_role
   from public.profiles
   where lower(btrim(email)) = lower(btrim(p_email))
   limit 1;
@@ -1472,7 +1573,7 @@ begin
   if target_id is null then
     return jsonb_build_object('failedAttempts', 0, 'tier', 0, 'locked', false,
       'permanent', false, 'lockedUntil', null, 'lockedAt', null, 'reason', null,
-      'secondsRemaining', 0);
+      'secondsRemaining', 0, 'alerted', false);
   end if;
 
   insert into public.login_attempts (user_id, email)
@@ -1491,7 +1592,7 @@ begin
       'failedAttempts', cur_attempts, 'tier', cur_tier, 'locked', true,
       'permanent', true, 'lockedUntil', null, 'lockedAt', cur_locked_at,
       'reason', (select lock_reason from public.login_attempts where user_id = target_id),
-      'secondsRemaining', 0);
+      'secondsRemaining', 0, 'alerted', false);
   end if;
 
   -- Still inside a timed lock: report the time left, do not move the counter.
@@ -1500,7 +1601,8 @@ begin
       'failedAttempts', cur_attempts, 'tier', cur_tier, 'locked', true,
       'permanent', false, 'lockedUntil', cur_until, 'lockedAt', null,
       'reason', (select lock_reason from public.login_attempts where user_id = target_id),
-      'secondsRemaining', ceil(extract(epoch from (cur_until - now())))::int);
+      'secondsRemaining', ceil(extract(epoch from (cur_until - now())))::int,
+      'alerted', false);
   end if;
 
   -- Capped so a leaked counter can never grow without bound.
@@ -1514,7 +1616,10 @@ begin
       next_reason := 'Account locked after too many failed login attempts';
     else
       next_locked_at := null;
-      next_until := now() + make_interval(secs => next_tier * step_seconds);
+      next_until := now() + make_interval(secs => case next_tier
+        when 1 then 180
+        else 300
+      end);
       next_reason := 'Too many failed login attempts';
     end if;
   else
@@ -1534,6 +1639,44 @@ begin
       updated_at = now()
   where user_id = target_id;
 
+  -- Warn on the second wrong answer of every tier, then on every lock (3, 6,
+  -- 9). That is the same cadence the login form shows as filled strike marks.
+  should_alert := next_attempts >= 2
+    and (next_attempts % attempts_per_tier = 0
+      or next_attempts % attempts_per_tier = attempts_per_tier - 1);
+
+  if should_alert then
+    -- Epoch microseconds are unique enough for one alert per attempt and still
+    -- fit in a JavaScript safe integer (unlike microseconds × 1000).
+    alert_id := (extract(epoch from clock_timestamp()) * 1000000)::bigint;
+
+    if next_attempts % attempts_per_tier = 0 then
+      alert_title := 'Account locked after failed logins';
+      alert_message := format(
+        '%s incorrect password attempts on your %s account at %s. %s',
+        next_attempts,
+        target_role,
+        to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+        case when next_attempts >= max_attempts
+          then 'The account is permanently locked until it is recovered by email.'
+          else 'The account is temporarily locked for a security cooldown.'
+        end
+      );
+    else
+      alert_title := 'Multiple failed login attempts';
+      alert_message := format(
+        '%s incorrect password attempts on your %s account at %s. The next wrong answer will lock the account.',
+        next_attempts,
+        target_role,
+        to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+      );
+    end if;
+
+    insert into public.notifications (legacy_id, user_id, type, title, message, read)
+    values (alert_id, target_id::text, 'security', alert_title, alert_message, false)
+    on conflict (user_id, legacy_id) do nothing;
+  end if;
+
   return jsonb_build_object(
     'failedAttempts', next_attempts,
     'tier', next_tier,
@@ -1546,7 +1689,8 @@ begin
       when next_until is not null and next_until > now()
         then ceil(extract(epoch from (next_until - now())))::int
       else 0
-    end);
+    end,
+    'alerted', should_alert);
 end;
 $$;
 
@@ -1714,10 +1858,12 @@ begin
   end if;
 
   delete from public.favorites where true;
+  delete from public.account_reports where true;
   delete from public.notifications where true;
   delete from public.chats where true;
   delete from public.order_items where true;
   delete from public.orders where true;
+  delete from public.shop_ratings where true;
   delete from public.posts where true;
   delete from public.menu_items where true;
   delete from public.vendors where true;
@@ -1735,22 +1881,16 @@ begin
   where p.id <> auth.uid()
     and p.role <> 'admin'::public.app_role;
 
-  insert into public.activity_logs (
-    actor_id, actor_role, action, entity_type, entity_id, details
-  )
-  values (
-    auth.uid(), 'admin'::public.app_role, 'reset', 'platform', 'all',
-    jsonb_build_object('cleared', true)
-  );
-
   if exists (select 1 from public.vendors)
      or exists (select 1 from public.menu_items)
      or exists (select 1 from public.orders)
      or exists (select 1 from public.order_items)
+     or exists (select 1 from public.shop_ratings)
      or exists (select 1 from public.posts)
      or exists (select 1 from public.notifications)
      or exists (select 1 from public.chats)
      or exists (select 1 from public.favorites)
+     or exists (select 1 from public.account_reports)
      or exists (
        select 1 from public.profiles
        where id <> auth.uid() and role <> 'admin'::public.app_role
@@ -1799,11 +1939,12 @@ begin
     raise exception 'Invalid chat message' using errcode = '22023';
   end if;
 
-  -- Same 100-word ceiling as posts/comments. Image-only messages have no text
-  -- and count as 0 words. Existing messages are never re-validated, so old
+  -- Same 20-word and 200-character limits as posts/comments. Image-only messages
+  -- have no text. Existing messages are never re-validated, so old
   -- conversations keep loading and only new sends are limited.
-  if public.count_words(p_message ->> 'text') > 100 then
-    raise exception 'Chat messages are limited to 100 words' using errcode = '22001';
+  if public.count_words(p_message ->> 'text') > 20
+     or char_length(coalesce(p_message ->> 'text', '')) > 200 then
+    raise exception 'Chat messages are limited to 20 words and 200 characters' using errcode = '22001';
   end if;
 
   if sender_role = 'customer' then
@@ -2110,25 +2251,6 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute procedure public.handle_new_user();
 
-do $$
-declare
-  tbl text;
-begin
-  foreach tbl in array array[
-    'profiles', 'vendors', 'menu_items', 'orders', 'order_items',
-    'shop_ratings', 'posts', 'favorites', 'notifications', 'chats'
-  ]
-  loop
-    execute format('drop trigger if exists activity_log_row_change on public.%I', tbl);
-    execute format(
-      'create trigger activity_log_row_change after insert or update or delete on public.%I '
-      'for each row execute function public.log_portal_activity()',
-      tbl
-    );
-  end loop;
-end;
-$$;
-
 -- -----------------------------------------------------------------------------
 -- 11. Backfills  (all idempotent)
 -- -----------------------------------------------------------------------------
@@ -2223,7 +2345,7 @@ alter table public.notifications enable row level security;
 alter table public.chats enable row level security;
 alter table public.favorites enable row level security;
 alter table public.shop_ratings enable row level security;
-alter table public.activity_logs enable row level security;
+alter table public.account_reports enable row level security;
 
 -- ACCOUNTS --------------------------------------------------------------------
 
@@ -2455,6 +2577,285 @@ create policy posts_owner_write on public.posts for all
   using (author_id = auth.uid() or public.is_admin())
   with check (author_id = auth.uid() or public.is_admin());
 
+-- A report is submitted before an administrator reviews it, so it cannot use
+-- the post-owner write policy. Keep the existing report columns as the single
+-- source of truth and expose only a constrained authenticated RPC.
+create or replace function public.report_marketplace_post(p_post_id bigint, p_reason text)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  reporter_id uuid := auth.uid();
+  post_id bigint;
+  post_author_id uuid;
+begin
+  if reporter_id is null then
+    raise exception 'Sign in to report a post.';
+  end if;
+  if p_reason is null
+     or p_reason not in ('Spam', 'Scam', 'Inappropriate', 'Fake Promotion', 'Offensive', 'Other') then
+    raise exception 'Choose a valid reason for reporting this post.';
+  end if;
+
+  select id, author_id
+    into post_id, post_author_id
+  from public.posts
+  where legacy_id = p_post_id;
+
+  if not found then
+    select id, author_id
+      into post_id, post_author_id
+    from public.posts
+    where id = p_post_id;
+  end if;
+  if post_id is null then
+    raise exception 'The post could not be found.';
+  end if;
+  if post_author_id = reporter_id then
+    raise exception 'You cannot report your own post.';
+  end if;
+
+  update public.posts
+  set reported = true,
+      report_reason = p_reason,
+      updated_at = now()
+  where id = post_id;
+
+  return true;
+end;
+$$;
+
+revoke all on function public.report_marketplace_post(bigint, text) from public, anon;
+grant execute on function public.report_marketplace_post(bigint, text) to authenticated;
+
+create or replace function public.report_account(
+  p_account_id uuid,
+  p_account_type text,
+  p_reason text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_reporter_id uuid := auth.uid();
+  v_target_role public.app_role;
+  v_report public.account_reports%rowtype;
+begin
+  if v_reporter_id is null then
+    raise exception 'Sign in to report an account.';
+  end if;
+  if public.is_admin() then
+    raise exception 'Admin accounts cannot submit account reports.';
+  end if;
+  if p_account_type is null or p_account_type not in ('customer', 'vendor') then
+    raise exception 'Only customer and vendor accounts can be reported.';
+  end if;
+  if p_reason is null or p_reason not in ('Spam', 'Scam', 'Inappropriate', 'Impersonation', 'Harassment', 'Other') then
+    raise exception 'Choose a valid reason for reporting this account.';
+  end if;
+  if p_account_id is null then
+    raise exception 'The account could not be found.';
+  end if;
+  if p_account_id = v_reporter_id then
+    raise exception 'You cannot report your own account.';
+  end if;
+
+  select profile.role
+    into v_target_role
+  from public.profiles profile
+  where profile.id = p_account_id;
+  if not found or v_target_role::text <> p_account_type then
+    raise exception 'The selected customer/vendor account could not be found.';
+  end if;
+
+  insert into public.account_reports (reporter_id, account_id, account_type, reason)
+  values (v_reporter_id, p_account_id, p_account_type, p_reason)
+  on conflict (reporter_id, account_id) where status = 'open' and reporter_id is not null
+  do nothing
+  returning * into v_report;
+
+  if not found then
+    select *
+      into v_report
+    from public.account_reports
+    where reporter_id = v_reporter_id
+      and account_id = p_account_id
+      and status = 'open';
+  end if;
+
+  return jsonb_build_object(
+    'id', v_report.id,
+    'reporter_id', v_report.reporter_id,
+    'account_id', v_report.account_id,
+    'account_type', v_report.account_type,
+    'reason', v_report.reason,
+    'status', v_report.status,
+    'created_at', v_report.created_at,
+    'resolved_at', v_report.resolved_at,
+    'resolved_by', v_report.resolved_by
+  );
+end;
+$$;
+
+create or replace function public.resolve_account_report(p_report_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+begin
+  if auth.uid() is null or not public.is_admin() then
+    raise exception 'Only an authenticated admin can resolve account reports.'
+      using errcode = '42501';
+  end if;
+
+  update public.account_reports
+  set status = 'resolved',
+      resolved_at = now(),
+      resolved_by = auth.uid()
+  where id = p_report_id and status = 'open';
+
+  if not found then
+    raise exception 'The open account report could not be found.';
+  end if;
+  return true;
+end;
+$$;
+
+revoke all on function public.report_account(uuid, text, text) from public, anon;
+grant execute on function public.report_account(uuid, text, text) to authenticated;
+revoke all on function public.resolve_account_report(bigint) from public, anon;
+grant execute on function public.resolve_account_report(bigint) to authenticated;
+
+create or replace function public.add_post_comment(p_post_legacy_id bigint, p_content text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role public.app_role;
+  v_profile_name text;
+  v_avatar text;
+  v_vendor_name text;
+  v_vendor_logo text;
+  v_post_id bigint;
+  v_comments jsonb;
+  v_comment jsonb;
+begin
+  if v_user_id is null then
+    raise exception 'Sign in to comment on a post.';
+  end if;
+  if p_content is null or char_length(btrim(p_content)) = 0 then
+    raise exception 'A comment cannot be empty.';
+  end if;
+  if public.count_words(p_content) > 20 or char_length(p_content) > 200 then
+    raise exception 'Comments are limited to 20 words and 200 characters.' using errcode = '22001';
+  end if;
+
+  select profile.role, profile.full_name, profile.avatar
+    into v_role, v_profile_name, v_avatar
+  from public.profiles profile
+  where profile.id = v_user_id;
+  if not found then
+    raise exception 'Your account profile could not be found.';
+  end if;
+
+  if v_role = 'vendor'::public.app_role then
+    select vendor.name, vendor.logo
+      into v_vendor_name, v_vendor_logo
+    from public.vendors vendor
+    where vendor.owner_id = v_user_id;
+  end if;
+
+  v_comment := jsonb_build_object(
+    'id', gen_random_uuid()::text,
+    'authorId', v_user_id::text,
+    'authorName', coalesce(v_vendor_name, v_profile_name, 'KainHUB user'),
+    'authorAvatar', case when v_role = 'vendor'::public.app_role then v_vendor_logo else v_avatar end,
+    'authorRole', v_role::text,
+    'content', btrim(p_content),
+    'time', now(),
+    'createdAt', now()
+  );
+
+  select post.id, coalesce(post.comments, '[]'::jsonb)
+    into v_post_id, v_comments
+  from public.posts post
+  where (post.legacy_id = p_post_legacy_id
+      or (post.legacy_id is null and post.id = p_post_legacy_id))
+    and (not post.hidden or post.author_id = v_user_id or public.is_admin())
+  for update;
+  if not found then
+    raise exception 'This post is unavailable or could not be found.';
+  end if;
+
+  update public.posts
+  set comments = v_comments || jsonb_build_array(v_comment),
+      updated_at = now()
+  where id = v_post_id;
+
+  return v_comment;
+end;
+$$;
+
+create or replace function public.delete_post_comment(p_post_legacy_id bigint, p_comment_id text)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_post_id bigint;
+  v_comments jsonb;
+begin
+  if v_user_id is null then
+    raise exception 'Sign in to delete a comment.';
+  end if;
+
+  select post.id, coalesce(post.comments, '[]'::jsonb)
+    into v_post_id, v_comments
+  from public.posts post
+  where (post.legacy_id = p_post_legacy_id
+      or (post.legacy_id is null and post.id = p_post_legacy_id))
+    and (not post.hidden or post.author_id = v_user_id or public.is_admin())
+  for update;
+  if not found then
+    raise exception 'This post is unavailable or could not be found.';
+  end if;
+  if not exists (
+    select 1
+    from jsonb_array_elements(v_comments) comment_item
+    where comment_item ->> 'id' = p_comment_id
+      and ((comment_item ->> 'authorId' = v_user_id::text) or public.is_admin())
+  ) then
+    raise exception 'The comment was not found or you do not have permission to delete it.';
+  end if;
+
+  update public.posts
+  set comments = coalesce((
+        select jsonb_agg(comment_item order by ordinal)
+        from jsonb_array_elements(v_comments) with ordinality as comments(comment_item, ordinal)
+        where comment_item ->> 'id' <> p_comment_id
+      ), '[]'::jsonb),
+      updated_at = now()
+  where id = v_post_id;
+
+  return true;
+end;
+$$;
+
+revoke all on function public.add_post_comment(bigint, text) from public, anon;
+grant execute on function public.add_post_comment(bigint, text) to authenticated;
+revoke all on function public.delete_post_comment(bigint, text) from public, anon;
+grant execute on function public.delete_post_comment(bigint, text) to authenticated;
+
 -- A favourites list is private to the account that owns it, so the policy is
 -- keyed on user_id only and there is no admin escape hatch: nothing in the app
 -- needs to read somebody else's favourites, and allowing it would expose a
@@ -2488,9 +2889,11 @@ create policy chats_participant on public.chats for all
 );
 
 -- Activity is append-only through database triggers and readable only by admins.
-revoke all on public.activity_logs from anon, public, authenticated;
-drop policy if exists activity_logs_admin_read on public.activity_logs;
-create policy activity_logs_admin_read on public.activity_logs for select to authenticated
+
+
+revoke all on public.account_reports from anon, public, authenticated;
+drop policy if exists account_reports_admin_read on public.account_reports;
+create policy account_reports_admin_read on public.account_reports for select to authenticated
   using (public.is_admin());
 
 -- -----------------------------------------------------------------------------
@@ -2506,7 +2909,7 @@ grant select on public.profiles, public.vendors, public.menu_items, public.order
                public.order_items, public.posts, public.notifications, public.chats
   to anon, authenticated;
 
-grant select on public.activity_logs to authenticated;
+grant select on public.account_reports to authenticated;
 
 grant insert, update on public.profiles, public.vendors, public.menu_items, public.orders,
                         public.order_items, public.posts, public.notifications, public.chats
@@ -2521,6 +2924,9 @@ grant insert, update on public.customer_profiles, public.vendor_profiles, public
 
 grant delete on public.menu_items, public.orders, public.order_items, public.posts, public.chats
   to authenticated;
+
+revoke delete on public.notifications from anon, public, authenticated;
+grant delete on public.notifications to authenticated;
 
 -- Identity columns need sequence usage for inserts. The sequence name is
 -- resolved from the table, so this also works on an existing table whose
@@ -2606,19 +3012,34 @@ create policy marketplace_media_delete on storage.objects for delete to authenti
 -- 15. Realtime publication
 -- -----------------------------------------------------------------------------
 -- Supabase Realtime only streams changes from tables in this publication. Keep
--- the order tables, chats, ratings and shops published so updates reach open
--- clients immediately.
+-- every table used by the app's live state queries published so changes reach
+-- open clients immediately.
 
 do $$
 declare
   tbl text;
 begin
   if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    raise warning 'supabase_realtime publication is missing; orders, chats and shop ratings will use periodic refresh until Realtime is enabled.';
+    raise warning 'supabase_realtime publication is missing; live updates require enabling the Realtime publication for the app tables.';
     return;
   end if;
 
-  foreach tbl in array array['orders', 'order_items', 'chats', 'shop_ratings', 'vendors']
+  foreach tbl in array array[
+    'profiles',
+    'customer_profiles',
+    'vendor_profiles',
+    'admin_profiles',
+    'vendors',
+    'menu_items',
+    'posts',
+    'orders',
+    'order_items',
+    'notifications',
+    'chats',
+    'favorites',
+    'shop_ratings',
+    'account_reports'
+  ]
   loop
     if not exists (
       select 1 from pg_publication_tables
@@ -2713,7 +3134,7 @@ where n.nspname = 'public' and c.relkind = 'r'
   and c.relname in (
     'profiles', 'customer_profiles', 'vendor_profiles', 'admin_profiles',
     'vendors', 'menu_items', 'orders', 'order_items', 'shop_ratings',
-    'posts', 'favorites', 'notifications', 'chats', 'activity_logs'
+    'posts', 'favorites', 'notifications', 'chats', 'account_reports'
   )
 order by c.relname;
 
@@ -2758,7 +3179,7 @@ select
 select
   (select count(*) from information_schema.tables
     where table_schema = 'public'
-      and table_name = 'post_comments')
+      and table_name in ('post_comments', 'activity_logs'))
     as retired_tables_left,
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'vendors' and column_name = 'category_id')
@@ -2912,13 +3333,12 @@ declare
   role_tables integer;
   missing_role_profiles bigint;
   role_rls boolean;
-  activity_logs_rls boolean;
 begin
-  -- The unused comment table must be gone; role profile tables are required.
+  -- Retired tables must be gone; role profile tables are required.
   select count(*) into retired_tables
   from information_schema.tables
   where table_schema = 'public'
-    and table_name = 'post_comments';
+    and table_name in ('post_comments', 'activity_logs');
 
   if retired_tables <> 0 then
     raise exception
@@ -2961,27 +3381,29 @@ begin
       'All role profile tables must have RLS enabled. Nothing has been committed.';
   end if;
 
-  select relrowsecurity into activity_logs_rls
-  from pg_class where oid = 'public.activity_logs'::regclass;
-  if activity_logs_rls is distinct from true then
+  if (select relrowsecurity from pg_class where oid = 'public.account_reports'::regclass) is distinct from true
+     or not exists (
+       select 1 from pg_policies
+       where schemaname = 'public' and tablename = 'account_reports'
+         and policyname = 'account_reports_admin_read'
+     ) then
     raise exception
-      'public.activity_logs must have RLS enabled. Nothing has been committed.';
+      'public.account_reports must have RLS enabled and an admin-only read policy. Nothing has been committed.';
   end if;
-  if not exists (
-    select 1 from pg_policies
-    where schemaname = 'public' and tablename = 'activity_logs'
-      and policyname = 'activity_logs_admin_read'
-  ) then
+  if not has_table_privilege('authenticated', 'public.account_reports', 'SELECT')
+     or has_table_privilege('authenticated', 'public.account_reports', 'INSERT')
+     or has_table_privilege('authenticated', 'public.account_reports', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.account_reports', 'DELETE')
+     or has_table_privilege('anon', 'public.account_reports', 'SELECT') then
     raise exception
-      'public.activity_logs is missing its admin-only read policy. Nothing has been committed.';
+      'public.account_reports must allow authenticated reads only, with RLS enforcing admin access. Nothing has been committed.';
   end if;
-  if not has_table_privilege('authenticated', 'public.activity_logs', 'SELECT')
-     or has_table_privilege('authenticated', 'public.activity_logs', 'INSERT')
-     or has_table_privilege('authenticated', 'public.activity_logs', 'UPDATE')
-     or has_table_privilege('authenticated', 'public.activity_logs', 'DELETE')
-     or has_table_privilege('anon', 'public.activity_logs', 'SELECT') then
+  if not has_function_privilege('authenticated', 'public.report_account(uuid,text,text)', 'EXECUTE')
+     or has_function_privilege('anon', 'public.report_account(uuid,text,text)', 'EXECUTE')
+     or not has_function_privilege('authenticated', 'public.resolve_account_report(bigint)', 'EXECUTE')
+     or has_function_privilege('anon', 'public.resolve_account_report(bigint)', 'EXECUTE') then
     raise exception
-      'public.activity_logs grants must allow authenticated reads only, with RLS enforcing admin access. Nothing has been committed.';
+      'Account report RPC grants are incomplete or exposed to anon. Nothing has been committed.';
   end if;
 
   select count(*) into retired_columns
@@ -3124,9 +3546,9 @@ begin
   end if;
 
   select has_function_privilege(
-    'authenticated', 'public.rate_completed_order(text,integer)', 'EXECUTE'
+    'authenticated', 'public.rate_completed_order(text,integer,text)', 'EXECUTE'
   ) and not has_function_privilege(
-    'anon', 'public.rate_completed_order(text,integer)', 'EXECUTE'
+    'anon', 'public.rate_completed_order(text,integer,text)', 'EXECUTE'
   ) into ratings_rpc;
   if not ratings_rpc then
     raise exception
@@ -3138,9 +3560,9 @@ begin
   raise notice 'post-condition ok: profiles retains all 5 compatibility detail columns';
   raise notice 'post-condition ok: public.favorites exists, keyed (%), grants: %', f_pk, f_grants;
   raise notice 'post-condition ok: public.shop_ratings is private and writes require rate_completed_order';
-  raise notice 'post-condition ok: public.activity_logs is append-only and admin-readable';
+  raise notice 'post-condition ok: public.account_reports is admin-readable and written through constrained RPCs';
 end $$;
 
 notify pgrst, 'reload schema';
-
+z`
 commit;

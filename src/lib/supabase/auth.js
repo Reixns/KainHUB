@@ -47,6 +47,9 @@ export async function signIn(email, password, requestedRole) {
       secondsRemaining: Number(lockState.secondsRemaining) || 0,
       countAttempt: false,
       failedAttempts: lockState.failedAttempts,
+      // The lock was raised and reported by whichever attempt triggered it;
+      // re-reporting it on every pre-check would flood the account owner's inbox.
+      alerted: true,
     };
   }
 
@@ -70,6 +73,7 @@ export async function signIn(email, password, requestedRole) {
         permanent,
         secondsRemaining: Number(attemptState.secondsRemaining) || 0,
         failedAttempts: attemptState.failedAttempts,
+        alerted: attemptState.alerted === true,
       };
     }
     const attempts = Number(attemptState?.failedAttempts);
@@ -90,6 +94,10 @@ export async function signIn(email, password, requestedRole) {
       attemptsRemaining: Number.isFinite(attempts) && attempts % 3 !== 0
         ? 3 - (attempts % 3)
         : undefined,
+      // True only when this attempt crossed the warning/lock threshold and the
+      // database wrote the account owner's row itself. Older schemas omit the flag, so the
+      // login form still falls back to a local notification.
+      alerted: attemptState?.alerted === true,
     };
   }
 
@@ -296,6 +304,44 @@ export async function updatePassword(password, role = 'customer') {
   }
 
   return client.auth.updateUser({ password });
+}
+
+export async function changePassword(currentPassword, newPassword, role = 'customer') {
+  const client = getSupabaseClient(role);
+  if (!client) return { error: new Error('Password changes require a configured Supabase account.') };
+  if (!currentPassword) return { error: new Error('Enter your current password.') };
+  if (!newPassword) return { error: new Error('Enter a new password.') };
+  if (currentPassword === newPassword) {
+    return { error: new Error('Your new password must be different from your current password.') };
+  }
+
+  const { data, error: userError } = await client.auth.getUser();
+  const email = data?.user?.email;
+  if (userError || !email) {
+    return { error: new Error('Your session has expired. Sign in again and retry.') };
+  }
+
+  const probe = getProbeClient();
+  if (!probe) return { error: new Error('Your current password could not be verified. Try again later.') };
+  const { error: verifyError } = await probe.auth.signInWithPassword({
+    email,
+    password: currentPassword,
+  });
+  if (verifyError) {
+    const invalid = verifyError.code === 'invalid_credentials'
+      || /invalid login credentials/i.test(verifyError.message || '');
+    return {
+      error: new Error(invalid
+        ? 'Your current password is incorrect.'
+        : 'Your current password could not be verified. Please retry.'),
+    };
+  }
+
+  const { error: updateError } = await client.auth.updateUser({ password: newPassword });
+  if (updateError) {
+    return { error: updateError };
+  }
+  return { error: null };
 }
 
 /*

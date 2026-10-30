@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, CheckCheck, Clock, ChefHat, Package, Truck, MapPin, Home, MessageSquare, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Check, CheckCheck, Clock, ChefHat, Package, Truck, MapPin, Home, MessageSquare, CheckCircle2, XCircle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Card, Button, StatusBadge, formatPeso, formatDateTime, formatQueue, LogoMark } from '@/components/UI';
+import { Card, Button, StatusBadge, formatPeso, formatDateTime, formatQueue, LogoMark, Modal } from '@/components/UI';
 import ShopRatingForm from '@/components/ShopRatingForm';
 import { ORDER_STATUSES_DELIVERY, ORDER_STATUSES_PICKUP } from '@/data/mockData';
 
@@ -9,12 +10,13 @@ export default function CustomerOrderDetail() {
   const { orderId } = useParams();
   const [searchParams] = useSearchParams();
   const isNew = searchParams.get('success') === '1';
-  const { orders, vendors, shopRatings, rateShop } = useApp();
+  const { orders, vendors, shopRatings, rateShop, cancelOrder, savingOrderIds } = useApp();
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const order = orders.find((o) => o.id === orderId);
 
   if (!order) {
     return (
-      <div>
+      <div className="mx-auto w-full max-w-5xl">
         <Link to="/customer/orders" className="inline-flex items-center gap-1 text-sm text-body hover:text-ink mb-4">
           <ArrowLeft className="w-4 h-4" /> Back to orders
         </Link>
@@ -27,9 +29,10 @@ export default function CustomerOrderDetail() {
   const savedRating = shopRatings.find((item) => String(item.orderNumber) === String(order.id));
   const statuses = order.fulfillment === 'DELIVERY' ? ORDER_STATUSES_DELIVERY : ORDER_STATUSES_PICKUP;
   const currentIdx = statuses.indexOf(order.status);
+  const savingCancel = savingOrderIds.has(String(order.id));
 
   return (
-    <div>
+    <div className="mx-auto w-full max-w-5xl">
       <div className="flex items-center gap-2 mb-5">
         <Link to="/customer/orders" aria-label="Back to orders" className="-ml-1 tap-target rounded-full text-muted hover:bg-surface-hover hover:text-ink">
           <ArrowLeft className="w-5 h-5" />
@@ -51,6 +54,20 @@ export default function CustomerOrderDetail() {
         </div>
       )}
 
+      {order.status === 'CANCELLED' && (
+        <div className="mb-4 rounded-card border border-danger/30 bg-danger-soft p-4">
+          <div className="flex items-start gap-3">
+            <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-danger" aria-hidden="true" />
+            <div>
+              <h2 className="font-semibold text-ink">Order cancelled</h2>
+              <p className="mt-0.5 text-sm text-body">
+                You cancelled this order before the shop accepted it.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/*
         Status first, and as the largest element on the page. A customer opening
         this link wants one answer -- where is my food -- so the tracker leads
@@ -66,6 +83,22 @@ export default function CustomerOrderDetail() {
         </div>
 
         <ProgressTracker statuses={statuses} currentIdx={currentIdx} fulfillment={order.fulfillment} />
+
+        {order.status === 'RECEIVED' && (
+          <div className="mt-5 flex flex-col gap-3 border-t border-hairline pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-muted">
+              You can cancel until the shop accepts your order.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-danger ring-danger/30 hover:bg-danger-soft hover:text-danger"
+              onClick={() => setConfirmCancel(true)}
+            >
+              <XCircle className="h-4 w-4" aria-hidden="true" /> Cancel order
+            </Button>
+          </div>
+        )}
       </Card>
 
       {order.status === 'COMPLETED' && (
@@ -178,6 +211,35 @@ export default function CustomerOrderDetail() {
           </Button>
         </div>
       </div>
+
+      <Modal
+        open={confirmCancel}
+        onClose={() => { if (!savingCancel) setConfirmCancel(false); }}
+        title="Cancel this order?"
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" disabled={savingCancel} onClick={() => setConfirmCancel(false)}>
+              Keep order
+            </Button>
+            <Button
+              variant="danger"
+              loading={savingCancel}
+              onClick={async () => {
+                const cancelled = await cancelOrder(order.id);
+                if (cancelled) setConfirmCancel(false);
+              }}
+            >
+              Yes, cancel order
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-body">
+          Order <span className="font-semibold text-ink">{order.id}</span> will be cancelled.
+          This can only be done before the shop accepts your order, and it cannot be undone.
+        </p>
+      </Modal>
     </div>
   );
 }

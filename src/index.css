@@ -384,6 +384,18 @@ a {
   border-color: rgba(248, 113, 113, 0.3) !important;
 }
 
+.customer-portal-theme .bg-hairline {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.customer-portal-theme .bg-hairline-strong {
+  background-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.customer-portal-theme .divide-hairline > :not(:last-child) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 .customer-portal-theme input.bg-white,
 .customer-portal-theme textarea.bg-white,
 .customer-portal-theme select.bg-white {
@@ -441,6 +453,10 @@ a {
   background-color: rgba(56, 189, 248, 0.12) !important;
 }
 
+.staff-portal-theme .bg-ink {
+  background-color: #19191f !important;
+}
+
 .staff-portal-theme .text-ink {
   color: #fff !important;
 }
@@ -488,6 +504,18 @@ a {
   border-color: rgba(196, 181, 253, 0.32) !important;
 }
 
+.staff-portal-theme .bg-hairline {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.staff-portal-theme .bg-hairline-strong {
+  background-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+.staff-portal-theme .divide-hairline > :not(:last-child) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 .staff-portal-theme input.bg-white,
 .staff-portal-theme textarea.bg-white,
 .staff-portal-theme select.bg-white {
@@ -505,6 +533,138 @@ a {
 .staff-portal-theme select.bg-white:disabled {
   background-color: #19191f !important;
   color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/*
+ * White-tinted hover utilities read as a bright flash on dark controls across
+ * the portals, chat, and auth screens. Keep interactive controls on a charcoal
+ * hover surface instead.
+ */
+:is(button, a, [role="button"])[class*="hover:bg-white"]:hover {
+  background-color: #25232d !important;
+}
+
+/*
+ * Variant-prefixed utilities are separate class names in the DOM, so the
+ * base-token remaps above never reached them. Menu rows, nav items and row
+ * actions therefore flashed the light-mode surface (near-white) on hover
+ * inside the dark shells. Remap the hover forms as well.
+ */
+.customer-portal-theme [class*="hover:bg-white"]:hover,
+.staff-portal-theme [class*="hover:bg-white"]:hover,
+.customer-portal-theme [class*="hover:bg-surface-hover"]:hover,
+.staff-portal-theme [class*="hover:bg-surface-hover"]:hover,
+.customer-portal-theme [class*="hover:bg-surface-sunken"]:hover,
+.staff-portal-theme [class*="hover:bg-surface-sunken"]:hover {
+  background-color: #25232d !important;
+}
+
+.customer-portal-theme [class*="hover:bg-hairline"]:hover,
+.staff-portal-theme [class*="hover:bg-hairline"]:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.customer-portal-theme [class*="hover:bg-brand-soft"]:hover,
+.customer-portal-theme [class*="hover:bg-brand-muted"]:hover,
+.staff-portal-theme [class*="hover:bg-brand-soft"]:hover,
+.staff-portal-theme [class*="hover:bg-brand-muted"]:hover {
+  background-color: rgba(167, 139, 250, 0.18) !important;
+}
+
+.customer-portal-theme [class*="hover:bg-success-soft"]:hover,
+.staff-portal-theme [class*="hover:bg-success-soft"]:hover {
+  background-color: rgba(52, 211, 153, 0.16) !important;
+}
+
+.customer-portal-theme [class*="hover:bg-warning-soft"]:hover,
+.staff-portal-theme [class*="hover:bg-warning-soft"]:hover {
+  background-color: rgba(251, 191, 36, 0.16) !important;
+}
+
+.customer-portal-theme [class*="hover:bg-danger-soft"]:hover,
+.staff-portal-theme [class*="hover:bg-danger-soft"]:hover {
+  background-color: rgba(248, 113, 113, 0.16) !important;
+}
+
+.customer-portal-theme [class*="hover:bg-info-soft"]:hover,
+.staff-portal-theme [class*="hover:bg-info-soft"]:hover {
+  background-color: rgba(56, 189, 248, 0.16) !important;
+}
+
+.customer-portal-theme .bg-brand-soft\/30,
+.staff-portal-theme .bg-brand-soft\/30 {
+  background-color: rgba(167, 139, 250, 0.14) !important;
+}
+
+.customer-portal-theme .bg-success-soft\/30,
+.staff-portal-theme .bg-success-soft\/30 {
+  background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+.customer-portal-theme [class*="active:bg-white"]:active,
+.staff-portal-theme [class*="active:bg-white"]:active,
+.customer-portal-theme [class*="active:bg-surface-hover"]:active,
+.staff-portal-theme [class*="active:bg-surface-hover"]:active,
+.customer-portal-theme [class*="active:bg-surface-sunken"]:active,
+.staff-portal-theme [class*="active:bg-surface-sunken"]:active {
+  background-color: #25232d !important;
+}
+
+.customer-portal-theme [class*="focus:bg-white"]:focus,
+.staff-portal-theme [class*="focus:bg-white"]:focus,
+.customer-portal-theme [class*="focus:bg-surface-hover"]:focus,
+.staff-portal-theme [class*="focus:bg-surface-hover"]:focus,
+.customer-portal-theme [class*="focus:bg-surface-sunken"]:focus,
+.staff-portal-theme [class*="focus:bg-surface-sunken"]:focus,
+.customer-portal-theme [class*="focus-within:bg-white"]:focus-within,
+.staff-portal-theme [class*="focus-within:bg-white"]:focus-within,
+.customer-portal-theme [class*="focus-within:bg-surface-hover"]:focus-within,
+.staff-portal-theme [class*="focus-within:bg-surface-hover"]:focus-within,
+.customer-portal-theme [class*="focus-within:bg-surface-sunken"]:focus-within,
+.staff-portal-theme [class*="focus-within:bg-surface-sunken"]:focus-within {
+  background-color: #19191f !important;
+}
+
+.customer-portal-theme [class*="hover:border-hairline"]:hover,
+.staff-portal-theme [class*="hover:border-hairline"]:hover,
+.customer-portal-theme [class*="focus:border-hairline"]:focus,
+.staff-portal-theme [class*="focus:border-hairline"]:focus {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.customer-portal-theme [class*="disabled:text-muted"]:disabled,
+.staff-portal-theme [class*="disabled:text-muted"]:disabled {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.customer-portal-theme [class*="disabled:bg-surface-hover"]:disabled,
+.staff-portal-theme [class*="disabled:bg-surface-hover"]:disabled {
+  background-color: #25232d !important;
+}
+
+.customer-portal-theme [class*="hover:text-ink"]:hover,
+.staff-portal-theme [class*="hover:text-ink"]:hover {
+  color: #fff !important;
+}
+
+.customer-portal-theme [class*="hover:text-body"]:hover,
+.staff-portal-theme [class*="hover:text-body"]:hover {
+  color: rgba(255, 255, 255, 0.76) !important;
+}
+
+.customer-portal-theme [class*="hover:text-muted"]:hover,
+.staff-portal-theme [class*="hover:text-muted"]:hover {
+  color: rgba(255, 255, 255, 0.55) !important;
+}
+
+.customer-portal-theme [class*="disabled:bg-surface-sunken"]:disabled,
+.staff-portal-theme [class*="disabled:bg-surface-sunken"]:disabled {
+  background-color: #19191f !important;
+}
+
+.customer-portal-theme select,
+.staff-portal-theme select {
+  color-scheme: dark;
 }
 
 .staff-portal-theme {

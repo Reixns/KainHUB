@@ -1,10 +1,10 @@
-import { useCallback } from 'react';
-import { nextLocalId } from './persistence';
-
-export function useCartActions({ setCart, showToast }) {
+  import { useCallback } from 'react';
+ import { nextLocalId } from './persistence';
+ export function useCartActions({ setCart, showToast }) {
   const addToCart = useCallback((vendor, item, quantity, notes) => {
     const normalizedNotes = notes || '';
     const wanted = Math.max(1, Number(quantity) || 1);
+    showToast(`${item.name} added to cart!`, 'success');
     setCart((current) => {
       // Compared against the same normalized value that is stored below. The
       // lookup used the raw argument while the stored row held `notes || ''`, so
@@ -29,7 +29,6 @@ export function useCartActions({ setCart, showToast }) {
         image: item.image,
       }];
     });
-    showToast(`${item.name} added to cart!`, 'success');
   }, [setCart, showToast]);
 
   const updateCartQty = useCallback((cartId, delta) => {
@@ -46,7 +45,12 @@ export function useCartActions({ setCart, showToast }) {
     setCart((current) => current.filter((c) => c.cartId !== cartId));
   }, [setCart]);
 
+  const removeCartItems = useCallback((cartIds) => {
+    const ids = new Set(cartIds.map((cartId) => String(cartId)));
+    setCart((current) => current.filter((item) => !ids.has(String(item.cartId))));
+  }, [setCart]);
+
   const clearCart = useCallback(() => setCart([]), [setCart]);
 
-  return { addToCart, updateCartQty, removeFromCart, clearCart };
+  return { addToCart, updateCartQty, removeFromCart, removeCartItems, clearCart };
 }

@@ -5,7 +5,7 @@ import { Toasts, isAdminNotification, PlatformLogo } from '@/components/UI';
 import { useEffect, useState } from 'react';
 
 export default function AdminLayout() {
-  const { auth, logout, vendors, orders, posts, notifications, platformSettings } = useApp();
+  const { auth, logout, vendors, orders, posts, notifications, accountReports, platformSettings } = useApp();
   const navigate = useNavigate();
   // Keep the admin navigation docked on desktop like the vendor portal, while
   // using a dismissible overlay on smaller screens.
@@ -32,7 +32,8 @@ export default function AdminLayout() {
 
   const pendingVendors = vendors.filter((v) => v.status === 'pending').length;
   const activeOrders = orders.filter((o) => ['RECEIVED', 'PREPARING', 'READY', 'OUT FOR DELIVERY'].includes(o.status)).length;
-  const reportedPosts = posts.filter((p) => p.reported).length;
+  const openReports = posts.filter((p) => p.reported).length
+    + accountReports.filter((report) => report.status === 'open').length;
   const unreadAccountNotifications = notifications.filter((notification) => isAdminNotification(notification, auth.user?.id) && !notification.read).length;
 
   const handleLogout = () => {
@@ -51,11 +52,11 @@ export default function AdminLayout() {
     { to: '/admin/vendors', icon: Store, label: 'Vendors', badge: pendingVendors },
     { to: '/admin/customers', icon: Users, label: 'Customers' },
     { to: '/admin/orders', icon: ClipboardList, label: 'All Orders', badge: activeOrders },
-    { to: '/admin/marketplace', icon: MessageSquare, label: 'Marketplace', badge: reportedPosts },
-    { to: '/admin/reports', icon: AlertTriangle, label: 'Reports' },
+    { to: '/admin/marketplace', icon: MessageSquare, label: 'Marketplace' },
+    { to: '/admin/reports', icon: AlertTriangle, label: 'Reports', badge: openReports },
     { to: '/admin/notifications', icon: Bell, label: 'Notifications', badge: unreadAccountNotifications },
     { to: '/admin/analytics', icon: BarChart3, label: 'Analytics' },
-    { to: '/admin/audit-logs', icon: ScrollText, label: 'Audit Logs' },
+
     { to: '/admin/settings', icon: Settings, label: 'Settings' },
     { to: '/admin/profile', icon: User, label: 'Profile' },
   ];
@@ -110,7 +111,7 @@ export default function AdminLayout() {
                 }`
               }
             >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors group-hover:text-ink group-[.is-active]:bg-white group-[.is-active]:text-brand-deep group-[.is-active]:shadow-sm">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted transition-colors group-hover:text-ink group-[.is-active]:bg-brand/30 group-[.is-active]:text-brand-deep group-[.is-active]:shadow-sm">
                 <item.icon className="h-[18px] w-[18px]" />
               </span>
               <span className="flex-1">{item.label}</span>

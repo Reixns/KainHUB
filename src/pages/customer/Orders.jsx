@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ClipboardList, ChevronRight, Package, Clock, ChefHat, CheckCircle, Truck, Store } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Card, Tabs, Button, StatusBadge, formatPeso, formatDateTime, formatQueue, EmptyState, LogoMark, CARD_FOCUS_RING } from '@/components/UI';
+import { Card, Tabs, Button, StatusBadge, formatPeso, formatDateTime, formatQueue, EmptyState, LogoMark, PageHeader, CARD_FOCUS_RING } from '@/components/UI';
 
 export default function CustomerOrders() {
   const { auth, orders, vendors } = useApp();
@@ -13,8 +13,10 @@ export default function CustomerOrders() {
   const active = myOrders.filter((o) => ['RECEIVED', 'PREPARING', 'READY', 'OUT FOR DELIVERY'].includes(o.status));
   const completed = myOrders.filter((o) => o.status === 'COMPLETED');
   const cancelled = myOrders.filter((o) => ['CANCELLED', 'REJECTED'].includes(o.status));
-  const preparingOrders = active.filter((o) => ['RECEIVED', 'PREPARING'].includes(o.status));
-  const servingOrders = active.filter((o) => ['READY', 'OUT FOR DELIVERY'].includes(o.status));
+  const waitingForSellerOrders = active.filter((o) => o.status === 'RECEIVED');
+  const preparingOrders = active.filter((o) => o.status === 'PREPARING');
+  const readyOrders = active.filter((o) => o.status === 'READY');
+  const outForDeliveryOrders = active.filter((o) => o.status === 'OUT FOR DELIVERY');
 
   const [activeTab, setActiveTab] = useState('all');
 
@@ -28,8 +30,13 @@ export default function CustomerOrders() {
   const displayed = activeTab === 'all' ? myOrders : activeTab === 'active' ? active : activeTab === 'completed' ? completed : cancelled;
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-ink mb-4">My Orders</h1>
+    <div className="mx-auto w-full max-w-4xl">
+      <PageHeader
+        eyebrow="Order history"
+        icon={ClipboardList}
+        title="My orders"
+        description="Track live orders and revisit everything you have ordered."
+      />
 
       {active.length > 0 && (
         <Card className="p-4 mb-5 bg-ink text-white border-0">
@@ -44,9 +51,11 @@ export default function CustomerOrders() {
               left each panel ~118px of content after the card padding, which
               truncated the shop name to a few characters -- and this is the panel
               whose whole job is to tell you which shop your order is at. */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <QueueColumn title="Waiting for seller" icon={Clock} orders={waitingForSellerOrders} tone="waiting" vendors={vendors} />
             <QueueColumn title="Preparing" icon={ChefHat} orders={preparingOrders} tone="warning" vendors={vendors} />
-            <QueueColumn title="Ready" icon={CheckCircle} orders={servingOrders} tone="success" vendors={vendors} />
+            <QueueColumn title="Ready" icon={CheckCircle} orders={readyOrders} tone="success" vendors={vendors} />
+            <QueueColumn title="Out for delivery" icon={Truck} orders={outForDeliveryOrders} tone="delivery" vendors={vendors} />
           </div>
         </Card>
       )}
@@ -131,8 +140,20 @@ export default function CustomerOrders() {
 function QueueColumn({ title, icon: Icon, orders, tone, vendors = [] }) {
   // On the dark board the soft status fills are unreadable, so the accent is
   // used for the icon and the queue number only. Everything else stays neutral.
-  const accent = tone === 'warning' ? 'text-warning' : 'text-success';
-  const panel = tone === 'warning' ? 'bg-warning/10 border-warning/25' : 'bg-success/10 border-success/25';
+  const accent = tone === 'waiting'
+    ? 'text-blue-300'
+    : tone === 'warning'
+      ? 'text-warning'
+      : tone === 'delivery'
+        ? 'text-purple-300'
+        : 'text-success';
+  const panel = tone === 'waiting'
+    ? 'bg-blue-500/10 border-blue-400/25'
+    : tone === 'warning'
+      ? 'bg-warning/10 border-warning/25'
+      : tone === 'delivery'
+        ? 'bg-purple-500/10 border-purple-400/25'
+        : 'bg-success/10 border-success/25';
 
   return (
     <div className={`rounded-card border p-3 min-h-28 ${panel}`}>

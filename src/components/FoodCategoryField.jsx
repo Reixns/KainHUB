@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, Tag } from 'lucide-react';
+import { FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 const CUSTOM_CATEGORY_OPTION = '__enter_custom_category__';
 
@@ -78,6 +79,7 @@ export default function FoodCategoryField({ value, onChange, error, className = 
           aria-invalid={error ? 'true' : undefined}
           aria-describedby={error ? `${inputId}-error` : `${inputId}-hint`}
           required
+          maxLength={FIELD_CHAR_LIMITS.category}
           placeholder="Enter your category"
           className={`${controlClass} mt-2 px-3.5 placeholder:text-subtle ${isDark ? 'register-input' : ''}`}
         />

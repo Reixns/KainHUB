@@ -21,22 +21,35 @@ import {
   signUp as supabaseSignUp,
   resetPassword as supabaseResetPassword,
   updatePassword as supabaseUpdatePassword,
+  changePassword as supabaseChangePassword,
   unlockAccount as supabaseUnlockAccount,
   getProfile,
   loadRemoteState,
+  loadRemoteOrders,
   persistState,
+  persistNewOrder,
   deleteSupabaseAccount,
   resetSupabaseData,
   uploadMedia as uploadSupabaseMedia,
   deleteSupabaseNotification,
+  markSupabaseNotificationRead,
+  markAllSupabaseNotificationsRead,
+  persistAdminPostModeration,
+  deleteSupabasePost,
   persistChatMessage,
   persistChatMessageRead,
   persistShopRating,
+  persistAdminMarketplacePost,
+  reportSupabasePost,
+  reportSupabaseAccount,
+  resolveSupabaseAccountReport,
+  persistMarketplaceComment,
+  deleteMarketplaceComment,
   persistOrderStatus,
 } from '@/lib/supabase';
 
-import { STORAGE_KEY, LOCAL_AUTH_KEY, ACTIVE_PORTAL_KEY, PORTAL_CHANGE_EVENT, FEED_CHANNEL, loadState, saveState, normalizeChats, mergeChats, mergePosts, mergeOrders, mergeFavorites, mergeById, updateIfChanged, nextLocalId, updateIdentityRow, normalizeFavorites, favoriteKey, ORDER_NOTIFICATION_TTL_MS, isNotificationExpired, pruneExpiredNotifications } from '@/context/persistence';
-import { asNumber } from '@/lib/supabase/mappers';
+import { STORAGE_KEY, LOCAL_AUTH_KEY, ACTIVE_PORTAL_KEY, PORTAL_CHANGE_EVENT, FEED_CHANNEL, loadState, saveState, replaceCachedPosts, normalizeChats, mergeChats, mergePosts, mergeOrders, mergeFavorites, mergeById, updateIfChanged, nextLocalId, updateIdentityRow, normalizeFavorites, favoriteKey, ORDER_NOTIFICATION_TTL_MS, isNotificationExpired, pruneExpiredNotifications } from '@/context/persistence';
+import { asNumber, normalizeStoreStatus } from '@/lib/supabase/mappers';
 import { clearVendorLogoPin, hydrateLocalVendorOverlay, pinVendorLogo } from '@/lib/supabase/state';
 /*
   From lib/notifications, NOT from components/UI. UI.jsx imports useApp to render
@@ -46,12 +59,19 @@ import { clearVendorLogoPin, hydrateLocalVendorOverlay, pinVendorLogo } from '@/
   header of lib/notifications.js.
 */
 import { isAdminNotification } from '@/lib/notifications';
+import {
+  findPasswordHistoryEntry,
+  forgetPasswordHistoryEntry,
+  isPasswordReused,
+  rememberPassword,
+} from '@/lib/passwordHistory';
 import { useCartActions } from '@/context/useCartActions';
 import { useChatActions } from '@/context/useChatActions';
 import { useFavoriteActions } from '@/context/useFavoriteActions';
 import { prepareImageForLocalStorage } from '@/lib/imageResize';
 import { useVendorActions } from '@/context/useVendorActions';
 import { useMarketplaceActions } from '@/context/useMarketplaceActions';
+import { FIELD_CHAR_LIMITS, findCharacterLimitViolation, isWithinCharacterLimit, characterLimitMessage } from '@/lib/textLimits';
 
 const AppContext = createContext(null);
 
@@ -63,6 +83,15 @@ const AppContext = createContext(null);
 */
 const orderNotificationExpiry = () => new Date(Date.now() + ORDER_NOTIFICATION_TTL_MS).toISOString();
 
+const readCachedAuth = () => {
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(LOCAL_AUTH_KEY) || 'null');
+    return cached?.user && cached?.role ? cached : { user: null, role: null };
+  } catch {
+    return { user: null, role: null };
+  }
+};
+
 /*
   How often expired notifications are swept out of state. See the sweep effect
   below; the TTL itself is an hour, so this only controls how long an already
@@ -72,7 +101,37 @@ const NOTIFICATION_SWEEP_MS = 20 * 1000;
 
 // See the remote-persist effect below: this is how long a burst of state changes
 // is allowed to accumulate before one Supabase pass runs for all of them.
-const REMOTE_PERSIST_DEBOUNCE_MS = 1500;
+const REMOTE_PERSIST_DEBOUNCE_MS = 100;
+const REALTIME_REFRESH_DEBOUNCE_MS = 50;
+const REALTIME_ORDER_REFRESH_DEBOUNCE_MS = 75;
+const REALTIME_FALLBACK_POLL_MS = 5000;
+const REALTIME_TABLES = [
+  'profiles',
+  'customer_profiles',
+  'vendor_profiles',
+  'admin_profiles',
+  'vendors',
+  'menu_items',
+  'posts',
+  'notifications',
+  'chats',
+  'favorites',
+  'shop_ratings',
+  'account_reports',
+];
+
+const reconcileRemoteRows = (currentRows = [], remoteRows = []) => {
+  const remoteIds = new Set(remoteRows.map((row) => String(row.id)));
+  const localOnlyRows = currentRows.filter((row) => (
+    row?.id != null
+    && row.created_at == null
+    && row.legacy_id == null
+    && row.dbId == null
+    && !remoteIds.has(String(row.id))
+  ));
+  return mergeById(localOnlyRows, remoteRows);
+};
+const notificationKey = (notification) => `${String(notification?.userId)}:${String(notification?.id)}`;
 const ORDER_STATUS_TRANSITIONS = {
   RECEIVED: ['PREPARING'],
   PREPARING: ['READY'],
@@ -83,23 +142,21 @@ const ORDER_STATUS_TRANSITIONS = {
 export function AppProvider({ children }) {
   const [initialState] = useState(loadState);
 
-  const [auth, setAuth] = useState(() => {
-    if (isSupabaseConfigured || supabaseConfigError) return { user: null, role: null };
-    try {
-      return JSON.parse(sessionStorage.getItem(LOCAL_AUTH_KEY) || 'null') || { user: null, role: null };
-    } catch {
-      return { user: null, role: null };
-    }
-  });
-  const [vendors, setVendors] = useState(initialState?.vendors || INITIAL_VENDORS);
+  const [auth, setAuth] = useState(readCachedAuth);
+  const [vendors, setVendors] = useState(
+    (initialState?.vendors || INITIAL_VENDORS).map((vendor) => ({
+      ...vendor,
+      storeStatus: normalizeStoreStatus(vendor.storeStatus),
+    }))
+  );
   const [customers, setCustomers] = useState(initialState?.customers || INITIAL_CUSTOMERS);
   const savedAdmins = initialState?.admins || [];
-  const [admins] = useState([
+  const [admins, setAdmins] = useState(() => [
     ...savedAdmins,
-    ...INITIAL_ADMINS.filter((seed) =>     !savedAdmins.some((admin) => admin.email?.toLowerCase() === seed.email.toLowerCase())),
+    ...INITIAL_ADMINS.filter((seed) => !savedAdmins.some((admin) => admin.email?.toLowerCase() === seed.email.toLowerCase())),
   ]);
   const [orders, setOrders] = useState(initialState?.orders || INITIAL_ORDERS);
-  const [auditLogs, setAuditLogs] = useState([]);
+
   const savedPosts = initialState?.posts || INITIAL_POSTS;
   const [posts, setPosts] = useState(savedPosts.filter((post) => !(post.type === 'new_product' && post.product && !post.publishAt)));
   const [notifications, setNotifications] = useState(initialState?.notifications || INITIAL_NOTIFICATIONS);
@@ -112,11 +169,12 @@ export function AppProvider({ children }) {
   const [chats, setChats] = useState(normalizeChats(initialState?.chats || []));
   const [shopRatings, setShopRatings] = useState(initialState?.shopRatings || []);
   const [favorites, setFavorites] = useState(normalizeFavorites([initialState?.favorites || []]));
+  const [accountReports, setAccountReports] = useState(initialState?.accountReports || []);
   /*
     Favourites saved here but not yet confirmed by the server.
 
-    persistState is debounced (REMOTE_PERSIST_DEBOUNCE_MS) and the 15s refresh is
-    not, so between the tap and the write there is a window where the row exists
+    persistState is debounced (REMOTE_PERSIST_DEBOUNCE_MS) and realtime refreshes
+    are not, so between the tap and the write there is a window where the row exists
     locally and not remotely. The refresh reconciles a favourite the server lacks
     by removing it -- that is how an un-save on another device arrives -- and
     without this set it would also remove every favourite saved inside that
@@ -152,8 +210,10 @@ export function AppProvider({ children }) {
   }, []);
   const [remoteUser, setRemoteUser] = useState(null);
   const [authError, setAuthError] = useState(supabaseConfigError);
-  const [authReady, setAuthReady] = useState(!supabase);
+  const [authReady, setAuthReady] = useState(() => Boolean(readCachedAuth().user) || !supabase);
   const refreshInFlightRef = useRef(false);
+  const refreshRemoteStateRef = useRef(null);
+  const lastRemoteRefreshRef = useRef(0);
   const orderStatusWritesRef = useRef(new Set());
   const [savingOrderIds, setSavingOrderIds] = useState(() => new Set());
   const [ordersRealtimeStatus, setOrdersRealtimeStatus] = useState('connecting');
@@ -180,11 +240,12 @@ export function AppProvider({ children }) {
 
   // Persist state
   useEffect(() => {
-    saveState({ vendors, customers, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites });
-    if (!isSupabaseConfigured) {
-      sessionStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(auth));
-    }
-  }, [auth, vendors, customers, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites]);
+    saveState({ vendors, customers, admins, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites, accountReports });
+    try {
+      localStorage.setItem('kainhub_cart', JSON.stringify(cart));
+    } catch {}
+    sessionStorage.setItem(LOCAL_AUTH_KEY, JSON.stringify(auth));
+  }, [auth, vendors, customers, admins, orders, posts, notifications, platformSettings, cart, chats, shopRatings, favorites, accountReports]);
 
   /*
     The Supabase write is a second, debounced effect rather than sharing the
@@ -206,13 +267,35 @@ export function AppProvider({ children }) {
   const remoteIdleRef = useRef(Promise.resolve());
   const resetInProgressRef = useRef(false);
   const remoteStateReadyRef = useRef(false);
+  const dismissedNotificationKeysRef = useRef(new Set());
+  const mergeRemoteNotifications = (current, remote) => {
+    const visible = (rows) => (rows || []).filter(
+      (notification) => !dismissedNotificationKeysRef.current.has(notificationKey(notification))
+    );
+    const currentById = new Map(visible(current).map((notification) => [notificationKey(notification), notification]));
+    return reconcileRemoteRows(visible(current), visible(remote)).map((notification) => (
+      currentById.get(notificationKey(notification))?.read && !notification.read
+        ? { ...notification, read: true }
+        : notification
+    ));
+  };
   useEffect(() => {
     if (!isSupabaseConfigured || !remoteUser || !remoteStateReadyRef.current) {
       pendingRemoteRef.current = null;
       return undefined;
     }
     pendingRemoteRef.current = {
-      state: { auth, vendors, orders, posts, chats, notifications, favorites },
+      state: {
+        auth,
+        vendors,
+        orders,
+        posts,
+        chats,
+        notifications: notifications.filter((notification) => (
+          !dismissedNotificationKeysRef.current.has(notificationKey(notification))
+        )),
+        favorites,
+      },
       authUser: remoteUser,
     };
     const flushPendingWrites = async () => {
@@ -270,7 +353,6 @@ export function AppProvider({ children }) {
     const hydrate = async (session, portalRole = activeRole, watchId) => {
       if (!session?.user || !active || watchId !== authWatchIdRef.current) return;
       remoteStateReadyRef.current = false;
-      setAuthReady(false);
       setRemoteUser(session.user);
       const client = getSupabaseClient(portalRole);
       const profile = await getProfile(session.user.id, portalRole);
@@ -313,6 +395,7 @@ export function AppProvider({ children }) {
         setNotifications([]);
         setCustomers([]);
         setChats([]);
+        setAccountReports([]);
       }
       setAuthError('');
       const user = {
@@ -321,7 +404,7 @@ export function AppProvider({ children }) {
           id: asNumber(vendor.legacy_id ?? vendor.id),
           ownerId: vendor.owner_id,
           ownerName: vendor.owner_name,
-          storeStatus: vendor.store_status,
+          storeStatus: normalizeStoreStatus(vendor.store_status),
           deliveryAvailable: vendor.delivery_available,
           /*
             Read-back for the shop logo and cover.
@@ -366,8 +449,7 @@ export function AppProvider({ children }) {
       }
       if (!active || watchId !== authWatchIdRef.current || !remote) return;
       remoteStateReadyRef.current = true;
-      setOrdersRealtimeStatus('connected');
-      setChatRealtimeStatus('connected');
+      replaceCachedPosts(remote.posts || []);
       if (role === 'customer' && remote.shopRatings !== null) {
         setShopRatings(remote.shopRatings || []);
       } else if (role !== 'customer') {
@@ -393,22 +475,21 @@ export function AppProvider({ children }) {
       if (role === 'admin') {
         setPosts(remote.posts || []);
         setOrders(remote.orders || []);
-        setAuditLogs(remote.activityLogs || []);
-        setNotifications(remote.notifications || []);
-        setCustomers(remote.customers || []);
-        setChats(normalizeChats(remote.chats || []));
-      } else {
-        setAuditLogs([]);
-        if (remote.posts?.length) setPosts((current) => {
-          const next = mergePosts([current, remote.posts]);
+        if (Array.isArray(remote.notifications)) setNotifications((current) => {
+          const next = mergeRemoteNotifications(current, remote.notifications);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
+        setCustomers(remote.customers || []);
+        setChats(normalizeChats(remote.chats || []));
+        setAccountReports(remote.accountReports || []);
+      } else {
+        setPosts(remote.posts || []);
         if (remote.orders?.length) setOrders((current) => {
           const next = mergeOrders([current, remote.orders]);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
         if (remote.notifications?.length) setNotifications((current) => {
-          const next = mergeById(current, remote.notifications);
+          const next = mergeRemoteNotifications(current, remote.notifications);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
         if (remote.customers?.length) setCustomers((current) => {
@@ -440,16 +521,16 @@ export function AppProvider({ children }) {
         });
       }
       if (role === 'customer') setCustomers((current) => current.some((c) => c.id === user.id) ? current : [...current, user]);
+      lastRemoteRefreshRef.current = Date.now();
       setAuthReady(true);
     };
     const watchRole = async (role) => {
       const watchId = ++authWatchIdRef.current;
       remoteStateReadyRef.current = false;
-      if (role !== 'admin') setAuditLogs([]);
+
       unsubscribe();
       activeRole = role;
       sessionStorage.setItem(ACTIVE_PORTAL_KEY, role);
-      setAuthReady(false);
       currentClient = getSupabaseClient(role);
       const recoveryUrl = isResetPath ? new URL(window.location.href) : null;
       const recoveryCode = recoveryUrl?.searchParams.get('code');
@@ -491,6 +572,7 @@ export function AppProvider({ children }) {
       }
       const { data: listener } = currentClient.auth.onAuthStateChange((event, session) => {
         if (watchId !== authWatchIdRef.current || activeRole !== role) return;
+        if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') return;
         if (session) void hydrate(session, role, watchId);
         else if (event === 'SIGNED_OUT') {
           // Supabase can briefly emit SIGNED_OUT while a persisted session is
@@ -515,13 +597,19 @@ export function AppProvider({ children }) {
     };
     const refreshVisibleSession = async () => {
       if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastRemoteRefreshRef.current < 2000) return;
       const watchId = authWatchIdRef.current;
       const role = activeRole;
       const client = getSupabaseClient(role);
       const { data } = await client.auth.getSession();
-      if (data.session && watchId === authWatchIdRef.current) {
-        await hydrate(data.session, role, watchId);
+      if (!active || watchId !== authWatchIdRef.current) return;
+      if (!data.session) {
+        setRemoteUser(null);
+        setAuth({ user: null, role: null });
+        setAuthReady(true);
+        return;
       }
+      if (refreshRemoteStateRef.current) void refreshRemoteStateRef.current();
     };
     window.addEventListener(PORTAL_CHANGE_EVENT, handlePortalChange);
     document.addEventListener('visibilitychange', refreshVisibleSession);
@@ -538,13 +626,37 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!isSupabaseConfigured || !remoteUser || !auth.role) return undefined;
     let active = true;
+    let refreshQueued = false;
+    let refreshTimer = null;
+    let orderRefreshInFlight = false;
+    let orderRefreshQueued = false;
+    let orderRefreshTimer = null;
+    const finishRefresh = () => {
+      refreshInFlightRef.current = false;
+      if (active && refreshQueued) {
+        refreshQueued = false;
+        scheduleRefresh();
+      }
+    };
     const refresh = async () => {
-      if (refreshInFlightRef.current) return;
+      if (refreshInFlightRef.current) {
+        refreshQueued = true;
+        return;
+      }
       refreshInFlightRef.current = true;
       if (auth.role === 'customer') {
-        const profile = await getProfile(remoteUser.id, auth.role);
+        let profile;
+        try {
+          profile = await getProfile(remoteUser.id, auth.role);
+        } catch (error) {
+          setOrdersRealtimeStatus('reconnecting');
+          setChatRealtimeStatus('reconnecting');
+          console.error('[customer] account status refresh failed:', error);
+          finishRefresh();
+          return;
+        }
         if (!active) {
-          refreshInFlightRef.current = false;
+          finishRefresh();
           return;
         }
         if (profile?.status === 'suspended') {
@@ -556,7 +668,7 @@ export function AppProvider({ children }) {
           setAuthError('Your customer account has been suspended. Contact support for help.');
           setAuthReady(true);
           remoteStateReadyRef.current = false;
-          refreshInFlightRef.current = false;
+          finishRefresh();
           return;
         }
       }
@@ -571,47 +683,58 @@ export function AppProvider({ children }) {
           console.error('[admin] database refresh failed:', message);
           showToast(`Admin data refresh failed: ${message}`, 'error');
         }
-        refreshInFlightRef.current = false;
+        finishRefresh();
         return;
       }
       if (!active || !remote) {
-        refreshInFlightRef.current = false;
+        finishRefresh();
         return;
       }
-      setOrdersRealtimeStatus('connected');
-      setChatRealtimeStatus('connected');
+      lastRemoteRefreshRef.current = Date.now();
+      replaceCachedPosts(remote.posts || []);
       if (auth.role === 'admin') {
         setVendors(hydrateLocalVendorOverlay(remote.vendors || []));
-        setPosts(remote.posts || []);
+        updateIfChanged(setPosts, remote.posts || []);
         setOrders(remote.orders || []);
-        setAuditLogs(remote.activityLogs || []);
-        setNotifications(remote.notifications || []);
+
+        if (Array.isArray(remote.notifications)) setNotifications((current) => {
+          const next = mergeRemoteNotifications(current, remote.notifications);
+          return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+        });
         setCustomers(remote.customers || []);
         setChats(normalizeChats(remote.chats || []));
+        setAccountReports((current) => (
+          JSON.stringify(current) === JSON.stringify(remote.accountReports || [])
+            ? current
+            : remote.accountReports || []
+        ));
       } else {
-        setAuditLogs([]);
-        if (remote.vendors?.length) setVendors((current) => {
-          const next = mergeById(current, hydrateLocalVendorOverlay(remote.vendors));
+
+        if (Array.isArray(remote.vendors)) setVendors((current) => {
+          const next = reconcileRemoteRows(current, hydrateLocalVendorOverlay(remote.vendors));
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
-        if (remote.posts?.length) setPosts((current) => {
-          const next = mergePosts([current, remote.posts]);
+        if (Array.isArray(remote.posts)) updateIfChanged(setPosts, remote.posts);
+        if (Array.isArray(remote.orders)) setOrders((current) => {
+          const next = reconcileRemoteRows(current, remote.orders);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
-        if (remote.orders?.length) setOrders((current) => {
-          const next = mergeOrders([current, remote.orders]);
+        if (Array.isArray(remote.notifications)) setNotifications((current) => {
+          const next = mergeRemoteNotifications(current, remote.notifications);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
-        if (remote.notifications?.length) setNotifications((current) => {
-          const next = mergeById(current, remote.notifications);
+        if (Array.isArray(remote.customers)) setCustomers((current) => {
+          const next = reconcileRemoteRows(current, remote.customers);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
-        if (remote.customers?.length) setCustomers((current) => {
-          const next = mergeById(current, remote.customers);
-          return JSON.stringify(current) === JSON.stringify(next) ? current : next;
-        });
-        if (remote.chats?.length) setChats((current) => {
-          const next = normalizeChats([...current, ...remote.chats]);
+        if (Array.isArray(remote.chats)) setChats((current) => {
+          const localOnlyChats = current.filter((chat) => (
+            chat?.id != null
+            && chat.created_at == null
+            && chat.legacy_id == null
+            && !remote.chats.some((remoteChat) => String(remoteChat.id) === String(chat.id))
+          ));
+          const next = normalizeChats([...remote.chats, ...localOnlyChats]);
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
       }
@@ -664,16 +787,106 @@ export function AppProvider({ children }) {
           return JSON.stringify(current) === JSON.stringify(next) ? current : next;
         });
       }
-      refreshInFlightRef.current = false;
+      finishRefresh();
     };
-    const interval = window.setInterval(() => {
-      void refresh().catch(() => {
-        refreshInFlightRef.current = false;
+    const refreshOrders = async () => {
+      if (orderRefreshInFlight) {
+        orderRefreshQueued = true;
+        return;
+      }
+      orderRefreshInFlight = true;
+      try {
+        const remoteOrders = await loadRemoteOrders(remoteUser.id, auth.role);
+        if (active && remoteOrders) {
+          setOrders((current) => {
+            const next = reconcileRemoteRows(current, remoteOrders);
+            return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+          });
+          setOrdersRealtimeStatus('connected');
+        }
+      } catch (error) {
+        if (active) {
+          setOrdersRealtimeStatus('reconnecting');
+          console.error('[orders] realtime refresh failed:', error);
+        }
+      } finally {
+        orderRefreshInFlight = false;
+        if (active && orderRefreshQueued) {
+          orderRefreshQueued = false;
+          scheduleOrderRefresh();
+        }
+      }
+    };
+    const scheduleOrderRefresh = () => {
+      if (orderRefreshTimer !== null) window.clearTimeout(orderRefreshTimer);
+      orderRefreshTimer = window.setTimeout(() => {
+        orderRefreshTimer = null;
+        void refreshOrders();
+      }, REALTIME_ORDER_REFRESH_DEBOUNCE_MS);
+    };
+    refreshRemoteStateRef.current = refresh;
+    let fallbackInterval = null;
+    let subscribed = false;
+    const startFallbackPolling = () => {
+      if (fallbackInterval !== null) return;
+      fallbackInterval = window.setInterval(() => {
+        void refresh().catch(() => {
+          finishRefresh();
+        });
+      }, REALTIME_FALLBACK_POLL_MS);
+    };
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refresh().catch(() => {
+          finishRefresh();
+        });
+      }, REALTIME_REFRESH_DEBOUNCE_MS);
+    };
+
+    startFallbackPolling();
+    const client = getSupabaseClient(auth.role);
+    const channel = client?.channel(`app-data-${auth.role}-${remoteUser.id}`);
+    if (channel) {
+      REALTIME_TABLES.forEach((table) => {
+        channel.on('postgres_changes', { event: '*', schema: 'public', table }, scheduleRefresh);
       });
-    }, 15000);
+      channel.on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, scheduleOrderRefresh);
+      channel.on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, scheduleOrderRefresh);
+      channel.subscribe((status) => {
+        if (!active) return;
+        if (status === 'SUBSCRIBED') {
+          setOrdersRealtimeStatus('connected');
+          setChatRealtimeStatus('connected');
+          if (fallbackInterval !== null) {
+            window.clearInterval(fallbackInterval);
+            fallbackInterval = null;
+          }
+          if (!subscribed) {
+            subscribed = true;
+            scheduleRefresh();
+          }
+          return;
+        }
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setOrdersRealtimeStatus('reconnecting');
+          setChatRealtimeStatus('reconnecting');
+          startFallbackPolling();
+        }
+      });
+    } else {
+      setOrdersRealtimeStatus('reconnecting');
+      setChatRealtimeStatus('reconnecting');
+    }
+
     return () => {
       active = false;
-      window.clearInterval(interval);
+      if (refreshRemoteStateRef.current === refresh) refreshRemoteStateRef.current = null;
+      if (fallbackInterval !== null) window.clearInterval(fallbackInterval);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (orderRefreshTimer !== null) window.clearTimeout(orderRefreshTimer);
+      if (channel) void client.removeChannel(channel);
     };
   }, [auth.role, remoteUser, showToast]);
 
@@ -700,12 +913,13 @@ export function AppProvider({ children }) {
         if (nextState.vendors) setVendors((current) => mergeById(current, hydrateLocalVendorOverlay(nextState.vendors)));
         if (nextState.customers) setCustomers((current) => mergeById(current, nextState.customers));
         if (nextState.orders) updateIfChanged(setOrders, nextState.orders);
-        if (nextState.posts) updateIfChanged(setPosts, mergePosts([nextState.posts]));
-        if (nextState.notifications) setNotifications((current) => mergeById(current, nextState.notifications));
+        if (!isSupabaseConfigured && nextState.posts) updateIfChanged(setPosts, mergePosts([nextState.posts]));
+        if (nextState.notifications) setNotifications((current) => mergeRemoteNotifications(current, nextState.notifications));
         if (nextState.platformSettings) {
           updateIfChanged(setPlatformSettings, { ...nextState.platformSettings, logo: PLATFORM_SETTINGS.logo });
         }
         if (nextState.chats) setChats((current) => mergeChats(current, nextState.chats));
+        if (nextState.accountReports) updateIfChanged(setAccountReports, nextState.accountReports);
         /*
           Replaced, not folded. The writer's copy is the whole shared truth for
           every account at once -- saveState writes the full favourites list rather
@@ -719,6 +933,7 @@ export function AppProvider({ children }) {
     };
 
     const handleFeedUpdate = (event) => {
+      if (isSupabaseConfigured) return;
       if (!event.data?.posts) return;
       setPosts((current) => {
         // `current` has to be one of the merge inputs, not just the remote list.
@@ -793,31 +1008,32 @@ export function AppProvider({ children }) {
   }, [nextNotificationId]);
 
   /*
-    Three wrong passwords on the login portal is a brute-force attempt, so it has
-    to reach the platform owner. This used to be addressed to the targeted
-    account and was dropped silently whenever that account was not in the local
-    customers/vendors/admins arrays -- which is the normal state of the login
-    page while signed out, because remote state only loads for a signed-in user.
-    So for a real Supabase user the alert never fired at all. Addressed to
-    'admin' now, the same convention as notifyAdminOfRegistration, and the
-    message carries the moment of the attempt so every lockout is its own row.
+    The database records failed-login alerts for the account owner. This local
+    fallback is only for accounts already present in local state, such as a
+    deployment without the lockout RPC; it must never send a target account's
+    sign-in details to the admin desk.
   */
-  const notifyFailedLogin = useCallback((email, role) => {
+  const notifyFailedLogin = useCallback((email, role, details = {}) => {
     const normalizedEmail = email.toLowerCase().trim();
     const account = role === 'customer'
       ? customers.find((item) => item.email?.toLowerCase() === normalizedEmail)
       : role === 'vendor'
         ? vendors.find((item) => item.email?.toLowerCase() === normalizedEmail)
         : admins.find((item) => item.email?.toLowerCase() === normalizedEmail);
-    const target = account
-      ? (account.name || account.fullName || account.shopName || account.ownerName)
-      : null;
+    if (account?.id == null) return;
+    const attempts = Math.max(2, Number(details.attempts) || 2);
+    const attemptLabel = `${attempts} incorrect password attempt${attempts === 1 ? '' : 's'}`;
+    const consequence = details.permanent
+      ? 'The account is now permanently locked until it is recovered by email.'
+      : details.locked
+        ? 'The account is temporarily locked for a security cooldown.'
+        : 'The account is not locked yet; another wrong answer will lock it.';
     const notification = {
       id: nextNotificationId(),
-      userId: 'admin',
+      userId: account.id,
       type: 'security',
-      title: 'Multiple failed login attempts',
-      message: `Three incorrect password attempts on the ${role} portal for ${target ? `${target} (${normalizedEmail})` : normalizedEmail} at ${new Date().toLocaleString()}.`,
+      title: details.locked ? 'Account locked after failed logins' : 'Multiple failed login attempts',
+      message: `${attemptLabel} on your ${role} account at ${new Date().toLocaleString()}. ${consequence}`,
       createdAt: new Date().toISOString(),
       read: false,
     };
@@ -836,9 +1052,10 @@ export function AppProvider({ children }) {
           ...(remote.vendor ? {
             ...remote.vendor,
             id: asNumber(remote.vendor.legacy_id ?? remote.vendor.id),
+            dbId: asNumber(remote.vendor.id),
             ownerId: remote.vendor.owner_id,
             ownerName: remote.vendor.owner_name,
-            storeStatus: remote.vendor.store_status,
+            storeStatus: normalizeStoreStatus(remote.vendor.store_status),
             deliveryAvailable: remote.vendor.delivery_available,
             // Falls back to the profiles mirror, same as `hydrate`. See the note
             // there -- a vendor whose `vendors` write was dropped still signs in
@@ -862,11 +1079,90 @@ export function AppProvider({ children }) {
           try { await getSupabaseClient(role)?.auth.signOut(); } catch {}
           return { success: false, message: 'Your account has been suspended.' };
         }
+        await forgetPasswordHistoryEntry(normalizedEmail, password);
         setRemoteUser(remote.data.user);
         sessionStorage.setItem(ACTIVE_PORTAL_KEY, role);
         window.dispatchEvent(new CustomEvent(PORTAL_CHANGE_EVENT, { detail: role }));
         setAuthError('');
         setAuth({ user, role });
+        try {
+          const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+          const sessionsKey = 'kainhub_login_sessions';
+          const existing = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+          const entry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            email: user.email,
+            role,
+            userAgent: ua,
+            device: /mobile|iphone|ipad|android/i.test(ua) ? 'Mobile device' : 'Desktop/Laptop',
+            platform: ua,
+            signedInAt: new Date().toISOString(),
+            current: true,
+            location: '',
+          };
+          const next = [entry, ...(Array.isArray(existing) ? existing : [])]
+            .map((item, index) => ({ ...item, current: index === 0 }))
+            .slice(0, 10);
+          localStorage.setItem(sessionsKey, JSON.stringify(next));
+          // Try to get approximate location (best effort)
+          const fetchLocation = async () => {
+            try {
+              const ipRes = await fetch('https://ipapi.co/json/');
+              if (ipRes.ok) {
+                const ipData = await ipRes.json();
+                const parts = [ipData.city, ipData.region, ipData.country_name].filter(Boolean);
+                if (parts.length) {
+                  const loc = parts.slice(0, 2).join(', ');
+                  const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                  if (Array.isArray(updated)) {
+                    const idx = updated.findIndex((s) => s?.id === entry.id);
+                    if (idx >= 0) {
+                      updated[idx].location = loc;
+                      localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            if (typeof navigator !== 'undefined' && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  (async () => {
+                    try {
+                      let loc = `Lat ${pos.coords.latitude.toFixed(3)}, Lon ${pos.coords.longitude.toFixed(3)}`;
+                      try {
+                        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
+                          headers: { 'Accept-Language': 'en', 'User-Agent': 'LANCASTER-App' },
+                        });
+                        if (res.ok) {
+                          const data = await res.json();
+                          const a = data?.address || {};
+                          const parts = [a.city || a.town || a.municipality || a.village, a.state || a.province, a.country].filter(Boolean);
+                          if (parts.length) loc = parts.slice(0, 2).join(', ');
+                          else if (data?.display_name) loc = data.display_name.split(',').slice(0, 2).join(', ');
+                        }
+                      } catch {}
+                      const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                      if (Array.isArray(updated)) {
+                        const idx = updated.findIndex((s) => s?.id === entry.id);
+                        if (idx >= 0) {
+                          updated[idx].location = loc;
+                          localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                        }
+                      }
+                    } catch {}
+                  })();
+                },
+                () => {},
+                { timeout: 5000, enableHighAccuracy: false }
+              );
+            }
+          };
+          fetchLocation();
+        } catch {
+          // Login sessions are best-effort only.
+        }
         notifyAccountLogin(user, role);
         showToast(`${role === 'admin' ? 'Admin' : role === 'vendor' ? 'Vendor' : 'Customer'} login successful.`, 'success');
         return { success: true };
@@ -874,15 +1170,19 @@ export function AppProvider({ children }) {
       // A configured Supabase project is authoritative. Falling through to
       // seeded/local credentials here let a demo admin appear signed in without
       // a Supabase session, so admin actions were correctly rejected by RLS.
+      const oldEntry = await findPasswordHistoryEntry(normalizedEmail, password);
       return {
         success: false,
         message: remote.error?.message || 'Unable to sign in with this Supabase account.',
+        oldPassword: Boolean(oldEntry),
+        oldPasswordChangedAt: oldEntry?.changedAt || null,
         countAttempt: remote.countAttempt === true,
         locked: remote.locked === true,
         permanent: remote.permanent === true,
         secondsRemaining: remote.secondsRemaining,
         failedAttempts: remote.failedAttempts,
         attemptsRemaining: remote.attemptsRemaining,
+        alerted: remote.alerted === true,
       };
     }
     if (role === 'customer') {
@@ -895,6 +1195,81 @@ export function AppProvider({ children }) {
         }
         const user = { ...customer, role: 'customer' };
         setAuth({ user, role: 'customer' });
+        try {
+          const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+          const sessionsKey = 'kainhub_login_sessions';
+          const existing = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+          const entry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            email: user.email,
+            role: 'customer',
+            userAgent: ua,
+            device: /mobile|iphone|ipad|android/i.test(ua) ? 'Mobile device' : 'Desktop/Laptop',
+            platform: ua,
+            signedInAt: new Date().toISOString(),
+            current: true,
+            location: '',
+          };
+          const next = [entry, ...(Array.isArray(existing) ? existing : [])]
+            .map((item, index) => ({ ...item, current: index === 0 }))
+            .slice(0, 10);
+          localStorage.setItem(sessionsKey, JSON.stringify(next));
+          const fetchLocation = async () => {
+            try {
+              const ipRes = await fetch('https://ipapi.co/json/');
+              if (ipRes.ok) {
+                const ipData = await ipRes.json();
+                const parts = [ipData.city, ipData.region, ipData.country_name].filter(Boolean);
+                if (parts.length) {
+                  const loc = parts.slice(0, 2).join(', ');
+                  const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                  if (Array.isArray(updated)) {
+                    const idx = updated.findIndex((s) => s?.id === entry.id);
+                    if (idx >= 0) {
+                      updated[idx].location = loc;
+                      localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            if (typeof navigator !== 'undefined' && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  (async () => {
+                    try {
+                      let loc = `Lat ${pos.coords.latitude.toFixed(3)}, Lon ${pos.coords.longitude.toFixed(3)}`;
+                      try {
+                        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
+                          headers: { 'Accept-Language': 'en', 'User-Agent': 'LANCASTER-App' },
+                        });
+                        if (res.ok) {
+                          const data = await res.json();
+                          const a = data?.address || {};
+                          const parts = [a.city || a.town || a.municipality || a.village, a.state || a.province, a.country].filter(Boolean);
+                          if (parts.length) loc = parts.slice(0, 2).join(', ');
+                          else if (data?.display_name) loc = data.display_name.split(',').slice(0, 2).join(', ');
+                        }
+                      } catch {}
+                      const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                      if (Array.isArray(updated)) {
+                        const idx = updated.findIndex((s) => s?.id === entry.id);
+                        if (idx >= 0) {
+                          updated[idx].location = loc;
+                          localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                        }
+                      }
+                    } catch {}
+                  })();
+                },
+                () => {},
+                { timeout: 5000, enableHighAccuracy: false }
+              );
+            }
+          };
+          fetchLocation();
+        } catch {}
         notifyAccountLogin(user, 'customer');
         showToast('Customer login successful.', 'success');
         return { success: true };
@@ -909,6 +1284,81 @@ export function AppProvider({ children }) {
         }
         const user = { ...vendor, role: 'vendor' };
         setAuth({ user, role: 'vendor' });
+        try {
+          const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+          const sessionsKey = 'kainhub_login_sessions';
+          const existing = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+          const entry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            email: user.email,
+            role: 'vendor',
+            userAgent: ua,
+            device: /mobile|iphone|ipad|android/i.test(ua) ? 'Mobile device' : 'Desktop/Laptop',
+            platform: ua,
+            signedInAt: new Date().toISOString(),
+            current: true,
+            location: '',
+          };
+          const next = [entry, ...(Array.isArray(existing) ? existing : [])]
+            .map((item, index) => ({ ...item, current: index === 0 }))
+            .slice(0, 10);
+          localStorage.setItem(sessionsKey, JSON.stringify(next));
+          const fetchLocation = async () => {
+            try {
+              const ipRes = await fetch('https://ipapi.co/json/');
+              if (ipRes.ok) {
+                const ipData = await ipRes.json();
+                const parts = [ipData.city, ipData.region, ipData.country_name].filter(Boolean);
+                if (parts.length) {
+                  const loc = parts.slice(0, 2).join(', ');
+                  const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                  if (Array.isArray(updated)) {
+                    const idx = updated.findIndex((s) => s?.id === entry.id);
+                    if (idx >= 0) {
+                      updated[idx].location = loc;
+                      localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            if (typeof navigator !== 'undefined' && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  (async () => {
+                    try {
+                      let loc = `Lat ${pos.coords.latitude.toFixed(3)}, Lon ${pos.coords.longitude.toFixed(3)}`;
+                      try {
+                        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
+                          headers: { 'Accept-Language': 'en', 'User-Agent': 'LANCASTER-App' },
+                        });
+                        if (res.ok) {
+                          const data = await res.json();
+                          const a = data?.address || {};
+                          const parts = [a.city || a.town || a.municipality || a.village, a.state || a.province, a.country].filter(Boolean);
+                          if (parts.length) loc = parts.slice(0, 2).join(', ');
+                          else if (data?.display_name) loc = data.display_name.split(',').slice(0, 2).join(', ');
+                        }
+                      } catch {}
+                      const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                      if (Array.isArray(updated)) {
+                        const idx = updated.findIndex((s) => s?.id === entry.id);
+                        if (idx >= 0) {
+                          updated[idx].location = loc;
+                          localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                        }
+                      }
+                    } catch {}
+                  })();
+                },
+                () => {},
+                { timeout: 5000, enableHighAccuracy: false }
+              );
+            }
+          };
+          fetchLocation();
+        } catch {}
         notifyAccountLogin(user, 'vendor');
         showToast('Vendor login successful.', 'success');
         return { success: true };
@@ -920,12 +1370,94 @@ export function AppProvider({ children }) {
       if (admin) {
         const user = { ...admin, role: 'admin' };
         setAuth({ user, role: 'admin' });
+        try {
+          const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+          const sessionsKey = 'kainhub_login_sessions';
+          const existing = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+          const entry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            email: user.email,
+            role: 'admin',
+            userAgent: ua,
+            device: /mobile|iphone|ipad|android/i.test(ua) ? 'Mobile device' : 'Desktop/Laptop',
+            platform: ua,
+            signedInAt: new Date().toISOString(),
+            current: true,
+            location: '',
+          };
+          const next = [entry, ...(Array.isArray(existing) ? existing : [])]
+            .map((item, index) => ({ ...item, current: index === 0 }))
+            .slice(0, 10);
+          localStorage.setItem(sessionsKey, JSON.stringify(next));
+          const fetchLocation = async () => {
+            try {
+              const ipRes = await fetch('https://ipapi.co/json/');
+              if (ipRes.ok) {
+                const ipData = await ipRes.json();
+                const parts = [ipData.city, ipData.region, ipData.country_name].filter(Boolean);
+                if (parts.length) {
+                  const loc = parts.slice(0, 2).join(', ');
+                  const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                  if (Array.isArray(updated)) {
+                    const idx = updated.findIndex((s) => s?.id === entry.id);
+                    if (idx >= 0) {
+                      updated[idx].location = loc;
+                      localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                      return;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            if (typeof navigator !== 'undefined' && navigator.geolocation) {
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  (async () => {
+                    try {
+                      let loc = `Lat ${pos.coords.latitude.toFixed(3)}, Lon ${pos.coords.longitude.toFixed(3)}`;
+                      try {
+                        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pos.coords.latitude}&lon=${pos.coords.longitude}`, {
+                          headers: { 'Accept-Language': 'en', 'User-Agent': 'LANCASTER-App' },
+                        });
+                        if (res.ok) {
+                          const data = await res.json();
+                          const a = data?.address || {};
+                          const parts = [a.city || a.town || a.municipality || a.village, a.state || a.province, a.country].filter(Boolean);
+                          if (parts.length) loc = parts.slice(0, 2).join(', ');
+                          else if (data?.display_name) loc = data.display_name.split(',').slice(0, 2).join(', ');
+                        }
+                      } catch {}
+                      const updated = JSON.parse(localStorage.getItem(sessionsKey) || '[]');
+                      if (Array.isArray(updated)) {
+                        const idx = updated.findIndex((s) => s?.id === entry.id);
+                        if (idx >= 0) {
+                          updated[idx].location = loc;
+                          localStorage.setItem(sessionsKey, JSON.stringify(updated));
+                        }
+                      }
+                    } catch {}
+                  })();
+                },
+                () => {},
+                { timeout: 5000, enableHighAccuracy: false }
+              );
+            }
+          };
+          fetchLocation();
+        } catch {}
         notifyAccountLogin(user, 'admin');
         showToast('Admin login successful.', 'success');
         return { success: true };
       }
     }
-    return { success: false, message: 'Invalid email or password.', countAttempt: true };
+    const oldEntry = await findPasswordHistoryEntry(normalizedEmail, password);
+    return {
+      success: false,
+      message: 'Invalid email or password.',
+      oldPassword: Boolean(oldEntry),
+      oldPasswordChangedAt: oldEntry?.changedAt || null,
+      countAttempt: true,
+    };
   }, [customers, vendors, admins, notifyAccountLogin, showToast]);
 
   const requestPhoneOtp = useCallback(async (phone, role) => {
@@ -947,7 +1479,7 @@ export function AppProvider({ children }) {
         id: asNumber(remote.vendor.legacy_id ?? remote.vendor.id),
         ownerId: remote.vendor.owner_id,
         ownerName: remote.vendor.owner_name,
-        storeStatus: remote.vendor.store_status,
+        storeStatus: normalizeStoreStatus(remote.vendor.store_status),
         deliveryAvailable: remote.vendor.delivery_available,
         coverImage: remote.vendor.cover_image,
         menu: [],
@@ -1005,7 +1537,7 @@ export function AppProvider({ children }) {
     if (remote.error || !remote.data?.user) return { success: false, message: getSupabaseEmailMessage(remote.error) || 'Invalid verification code.' };
     const profile = remote.profile || {};
     const user = {
-      ...(remote.vendor ? { ...remote.vendor, id: asNumber(remote.vendor.legacy_id ?? remote.vendor.id), ownerId: remote.vendor.owner_id, ownerName: remote.vendor.owner_name, storeStatus: remote.vendor.store_status, deliveryAvailable: remote.vendor.delivery_available, coverImage: remote.vendor.cover_image, menu: [] } : {}),
+      ...(remote.vendor ? { ...remote.vendor, id: asNumber(remote.vendor.legacy_id ?? remote.vendor.id), ownerId: remote.vendor.owner_id, ownerName: remote.vendor.owner_name, storeStatus: normalizeStoreStatus(remote.vendor.store_status), deliveryAvailable: remote.vendor.delivery_available, coverImage: remote.vendor.cover_image, menu: [] } : {}),
       ...profile,
       id: role === 'vendor' && remote.vendor ? asNumber(remote.vendor.legacy_id ?? remote.vendor.id) : remote.data.user.id,
       ownerId: role === 'vendor' && remote.vendor ? remote.vendor.owner_id : undefined,
@@ -1023,6 +1555,11 @@ export function AppProvider({ children }) {
   }, [getSupabaseEmailMessage]);
 
   const registerCustomer = useCallback(async (data) => {
+    const violation = findCharacterLimitViolation(data, {
+      fullName: FIELD_CHAR_LIMITS.fullName,
+      address: FIELD_CHAR_LIMITS.address,
+    });
+    if (violation) return { success: false, message: characterLimitMessage(violation.limit) };
     if (supabaseConfigError) return { success: false, message: supabaseConfigError };
     const email = data.email.toLowerCase().trim();
     if (supabase) {
@@ -1080,6 +1617,15 @@ export function AppProvider({ children }) {
   }, [customers, notifyAdminOfRegistration, getSupabaseEmailMessage]);
 
   const registerVendor = useCallback(async (data) => {
+    const violation = findCharacterLimitViolation({
+      ownerName: data.ownerName,
+      shopName: data.shopName,
+      address: data.shopAddress,
+      category: data.category,
+      operatingHours: data.operatingHours,
+      shopDescription: data.description || '',
+    });
+    if (violation) return { success: false, message: characterLimitMessage(violation.limit) };
     if (supabaseConfigError) return { success: false, message: supabaseConfigError };
     const email = data.email.toLowerCase().trim();
     if (supabase) {
@@ -1150,6 +1696,54 @@ export function AppProvider({ children }) {
       : { success: true };
   }, [auth.role]);
 
+  const changePassword = useCallback(async (currentPassword, nextPassword, role = auth.role || 'customer') => {
+    if (supabaseConfigError) return { success: false, message: supabaseConfigError };
+    if (!auth.user?.id) return { success: false, message: 'Sign in again before changing your password.' };
+    if (!currentPassword) return { success: false, message: 'Enter your current password.' };
+    if (!nextPassword) return { success: false, message: 'Enter a new password.' };
+    if (currentPassword === nextPassword) {
+      return { success: false, message: 'Your new password must be different from your current password.' };
+    }
+
+    // Keyed by email so the login screen, which has no signed-in user yet, can
+    // find the same history. Falling back to the id keeps accounts without an
+    // email working.
+    const historyKey = String(auth.user?.email || '').toLowerCase().trim() || auth.user?.id;
+    if (await isPasswordReused(historyKey, nextPassword)) {
+      return { success: false, message: 'You cannot reuse a recently used password. Choose a new one.' };
+    }
+
+    if (isSupabaseConfigured) {
+      const result = await supabaseChangePassword(currentPassword, nextPassword, role);
+      if (result.error) return { success: false, message: result.error.message };
+      // Record only the password that was just replaced, with the moment it was
+      // replaced, so a later sign-in with it can say when it changed.
+      await rememberPassword(historyKey, currentPassword, { changedAt: new Date().toISOString() });
+      return { success: true, message: 'Password changed.' };
+    }
+
+    const sameAccount = (account) => (
+      String(account.id) === String(auth.user.id)
+      || account.email?.toLowerCase() === auth.user.email?.toLowerCase()
+    );
+    const accounts = role === 'customer' ? customers : role === 'vendor' ? vendors : admins;
+    const account = accounts.find(sameAccount);
+    if (!account || account.password !== currentPassword) {
+      return { success: false, message: 'Your current password is incorrect.' };
+    }
+    const withPassword = (item) => (sameAccount(item) ? { ...item, password: nextPassword } : item);
+
+    if (role === 'customer') setCustomers((current) => current.map(withPassword));
+    else if (role === 'vendor') setVendors((current) => current.map(withPassword));
+    else setAdmins((current) => current.map(withPassword));
+    setAuth((current) => ({
+      ...current,
+      user: current.user ? { ...current.user, password: nextPassword } : current.user,
+    }));
+    await rememberPassword(historyKey, currentPassword, { changedAt: new Date().toISOString() });
+    return { success: true, message: 'Password changed.' };
+  }, [auth.role, auth.user, admins, customers, vendors]);
+
   const unlockAccount = useCallback(async (role = auth.role || 'customer') => {
     if (supabaseConfigError) return { success: false, message: supabaseConfigError };
     const result = await supabaseUnlockAccount(role);
@@ -1165,7 +1759,7 @@ export function AppProvider({ children }) {
     setRemoteUser(null);
     setAuthError('');
     setAuth({ user: null, role: null });
-    setAuditLogs([]);
+
     setCart([]);
     // The pending set is keyed by user, so an entry left here would only ever be
     // consulted by that same account again -- but it would then protect a row
@@ -1176,6 +1770,20 @@ export function AppProvider({ children }) {
 
   const updateProfile = useCallback(async (updates) => {
     if (!auth.user) return;
+    const violation = findCharacterLimitViolation({
+      fullName: updates.fullName,
+      ownerName: updates.ownerName,
+      shopName: updates.name,
+      address: updates.address,
+      category: updates.category,
+      operatingHours: updates.operatingHours,
+      shopDescription: updates.description,
+    });
+    if (violation) {
+      const message = characterLimitMessage(violation.limit);
+      showToast(message, 'error');
+      return { success: false, message };
+    }
     /*
       Snapshot who the edit was started for, and re-check it after every await.
 
@@ -1322,7 +1930,7 @@ export function AppProvider({ children }) {
   }, [auth.user, auth.role, remoteUser]);
 
   // CART
-  const { addToCart, updateCartQty, removeFromCart, clearCart } = useCartActions({ setCart, showToast });
+  const { addToCart, updateCartQty, removeFromCart, removeCartItems, clearCart } = useCartActions({ setCart, showToast });
 
   // FAVORITES
   const { favorites: myFavorites, isFavorite, toggleFavorite, removeFavorite, favoriteCount } =
@@ -1335,13 +1943,17 @@ export function AppProvider({ children }) {
       onRemoved: (row) => { pendingFavoritesRef.current.delete(favoriteKey(row)); },
     });
 
-  const rateShop = useCallback(async (orderNumber, rating) => {
+  const rateShop = useCallback(async (orderNumber, rating, comment = '') => {
     const score = Number(rating);
+    const reviewComment = typeof comment === 'string' ? comment.trim() : '';
     if (auth.role !== 'customer' || !auth.user?.id) {
       return { success: false, message: 'Sign in as a customer to rate a shop.' };
     }
     if (!Number.isInteger(score) || score < 1 || score > 5) {
       return { success: false, message: 'Choose a rating from 1 to 5 stars.' };
+    }
+    if (!isWithinCharacterLimit(reviewComment, FIELD_CHAR_LIMITS.ratingComment)) {
+      return { success: false, message: `Please keep your comment to ${FIELD_CHAR_LIMITS.ratingComment} characters or fewer.` };
     }
     const order = orders.find((item) => String(item.id) === String(orderNumber));
     if (!order || String(order.customerId) !== String(auth.user.id)) {
@@ -1357,7 +1969,7 @@ export function AppProvider({ children }) {
     let aggregate;
     if (isSupabaseConfigured) {
       try {
-        aggregate = await persistShopRating(order.id, score);
+        aggregate = await persistShopRating(order.id, score, reviewComment);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to save your rating. Please try again.';
         console.error('[ratings] shop rating could not be saved:', error);
@@ -1376,7 +1988,7 @@ export function AppProvider({ children }) {
     const createdAt = new Date().toISOString();
     setShopRatings((current) => current.some((item) => String(item.orderNumber) === String(order.id))
       ? current
-      : [{ orderNumber: order.id, vendorId: order.vendorId, rating: score, createdAt }, ...current]);
+      : [{ orderNumber: order.id, vendorId: order.vendorId, rating: score, comment: reviewComment, createdAt }, ...current]);
     setVendors((current) => current.map((shop) => String(shop.id) === String(order.vendorId)
       ? { ...shop, rating: Number(aggregate.rating), ratingCount: Number(aggregate.rating_count) }
       : shop));
@@ -1409,6 +2021,26 @@ export function AppProvider({ children }) {
 
   // ORDERS
   const placeOrder = useCallback(({ customer, vendor, items, paymentMethod, fulfillment, gcashRef, specialInstructions }) => {
+    const violation = findCharacterLimitViolation({
+      fullName: customer?.fullName,
+      address: customer?.address,
+      specialInstructions: specialInstructions || '',
+    }, {
+      fullName: FIELD_CHAR_LIMITS.fullName,
+      address: FIELD_CHAR_LIMITS.address,
+      specialInstructions: FIELD_CHAR_LIMITS.specialInstructions,
+    });
+    const invalidItemName = (items || []).some((item) => (
+      !isWithinCharacterLimit(item.name, FIELD_CHAR_LIMITS.productName)
+    ));
+    const invalidItemNote = (items || []).some((item) => (
+      !isWithinCharacterLimit(item.notes || '', FIELD_CHAR_LIMITS.itemNote)
+    ));
+    if (violation || invalidItemName || invalidItemNote) {
+      const limit = violation?.limit || (invalidItemName ? FIELD_CHAR_LIMITS.productName : FIELD_CHAR_LIMITS.itemNote);
+      showToast(characterLimitMessage(limit), 'error');
+      return null;
+    }
     // No delivery fee and no discounts: the shop and the customer settle
     // payment in chat, so the item sum is the whole total. Computed here in one
     // place and reused by the checkout summary from the same items, so the
@@ -1439,6 +2071,7 @@ export function AppProvider({ children }) {
       customerMobile: customer.mobile,
       customerAddress: customer.address,
       vendorId: vendor.id,
+      vendorDbId: vendor.dbId ?? null,
       vendorName: vendor.name,
       items: items.map((i) => ({
         menuId: i.menuId,
@@ -1459,6 +2092,12 @@ export function AppProvider({ children }) {
       updatedAt: now,
     };
     setOrders((o) => [order, ...o]);
+    if (isSupabaseConfigured) {
+      void persistNewOrder(order, customer.id).catch((error) => {
+        console.error('[orders] order save failed:', error);
+        showToast(error instanceof Error ? error.message : 'Order could not be saved. Please retry.', 'error');
+      });
+    }
 
     /*
       Decrement stock for each item ordered + increment queue.
@@ -1488,26 +2127,28 @@ export function AppProvider({ children }) {
     }
 
     // Add notification for vendor (simulated via vendor's view)
-    addNotification({
-      userId: vendor.id,
-      type: 'order',
-      title: 'New Order Received',
-      message: `Order ${orderId} from ${customer.fullName}`,
-      read: false,
-      createdAt: now,
-    });
-    // Add customer notification
-    addNotification({
-      userId: customer.id,
-      type: 'order',
-      title: 'Order Placed',
-      message: `Your order ${orderId} has been placed. Pila #${queueNumber}`,
-      read: false,
-      createdAt: now,
-      expiresAt: orderNotificationExpiry(),
-    });
+    try {
+      addNotification({
+        userId: vendor.id,
+        type: 'order',
+        title: 'New Order Received',
+        message: `Order ${orderId} from ${customer.fullName}`,
+        read: false,
+        createdAt: now,
+      });
+      // Add customer notification
+      addNotification({
+        userId: customer.id,
+        type: 'order',
+        title: 'Order Placed',
+        message: `Your order ${orderId} has been placed. Pila #${queueNumber}`,
+        read: false,
+        createdAt: now,
+        expiresAt: orderNotificationExpiry(),
+      });
+    } catch {}
     return order;
-  }, [orders, vendors, auth, addNotification]);
+  }, [orders, vendors, auth, addNotification, showToast]);
 
   const updateOrderStatus = useCallback(async (orderId, newStatus) => {
     const order = orders.find((item) => String(item.id) === String(orderId));
@@ -1594,6 +2235,12 @@ export function AppProvider({ children }) {
       showToast('Only newly received orders can be rejected.', 'error');
       return false;
     }
+    if (findCharacterLimitViolation({ rejectionReason: reason || '' }, {
+      rejectionReason: FIELD_CHAR_LIMITS.rejectionReason,
+    })) {
+      showToast(characterLimitMessage(FIELD_CHAR_LIMITS.rejectionReason), 'error');
+      return false;
+    }
     const orderKey = String(order.id);
     if (orderStatusWritesRef.current.has(orderKey)) return false;
     orderStatusWritesRef.current.add(orderKey);
@@ -1652,6 +2299,80 @@ export function AppProvider({ children }) {
       });
     }
   }, [orders, addNotification, showToast, remoteUser, auth.role]);
+
+  const cancelOrder = useCallback(async (orderId) => {
+    const order = orders.find((item) => String(item.id) === String(orderId));
+    if (!order) return false;
+    if (auth.role !== 'customer') {
+      showToast('Only the customer who placed this order can cancel it.', 'error');
+      return false;
+    }
+    if (String(order.customerId) !== String(auth.user?.id)) {
+      showToast('You can only cancel your own order.', 'error');
+      return false;
+    }
+    if (order.status !== 'RECEIVED') {
+      showToast('The shop already accepted this order, so it can no longer be cancelled.', 'error');
+      return false;
+    }
+    const orderKey = String(order.id);
+    if (orderStatusWritesRef.current.has(orderKey)) return false;
+    orderStatusWritesRef.current.add(orderKey);
+    setSavingOrderIds((current) => new Set(current).add(orderKey));
+    const now = new Date().toISOString();
+    const updatedOrder = {
+      ...order,
+      status: 'CANCELLED',
+      updatedAt: now,
+      timeline: [...(order.timeline || []), { status: 'CANCELLED', time: now, reason: 'Cancelled by customer' }],
+    };
+    showToast('Cancelling order...', 'info');
+
+    try {
+      if (isSupabaseConfigured) {
+        if (!remoteUser?.id) throw new Error('Your database session is unavailable. Sign in again and retry.');
+        await persistOrderStatus({
+          ...updatedOrder,
+          expectedStatus: order.status,
+        }, auth.role);
+      }
+      setOrders((current) => current.map((item) => (
+        String(item.id) === orderKey ? updatedOrder : item
+      )));
+      setVendors((vlist) => vlist.map((vendor) => {
+        if (String(vendor.id) !== String(order.vendorId)) return vendor;
+        const menu = (vendor.menu || []).map((menuItem) => {
+          const orderedQuantity = (order.items || [])
+            .filter((item) => String(item.menuId) === String(menuItem.id))
+            .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+          if (orderedQuantity === 0) return menuItem;
+          const stock = (Number(menuItem.stock) || 0) + orderedQuantity;
+          return { ...menuItem, stock, available: stock > 0 };
+        });
+        return { ...vendor, menu, queue: Math.max(0, (Number(vendor.queue) || 0) - 1) };
+      }));
+      showToast('Order cancelled.', 'success');
+      return true;
+    } catch (error) {
+      console.error('[orders] cancellation failed:', error);
+      if (isSupabaseConfigured) void refreshRemoteStateRef.current?.();
+      const message = error instanceof Error ? error.message : '';
+      showToast(
+        message.includes('changed elsewhere')
+          ? 'The shop already accepted this order, so it can no longer be cancelled.'
+          : message || 'Order could not be cancelled. Please retry.',
+        'error',
+      );
+      return false;
+    } finally {
+      orderStatusWritesRef.current.delete(orderKey);
+      setSavingOrderIds((current) => {
+        const next = new Set(current);
+        next.delete(orderKey);
+        return next;
+      });
+    }
+  }, [orders, auth.role, auth.user?.id, remoteUser, showToast]);
 
   // VENDOR OPERATIONS
   const {
@@ -1730,12 +2451,127 @@ export function AppProvider({ children }) {
   // MARKETPLACE
   const {
     addPost, toggleLikePost, addComment, deleteComment,
-    deletePost, togglePinPost, toggleHidePost, reportPost,
-  } = useMarketplaceActions({ setPosts, auth, showToast });
+    deletePost, togglePinPost, toggleHidePost, reportPost, resolvePostReport,
+  } = useMarketplaceActions({
+    setPosts,
+    auth,
+    showToast,
+    persistAdminPostModeration,
+    deleteSupabasePost,
+    persistMarketplaceComment,
+    deleteMarketplaceComment,
+    persistAdminMarketplacePost,
+    reportSupabasePost,
+    isSupabaseConfigured,
+  });
 
-  const markNotifRead = useCallback((notifId) => {
-    setNotifications((n) => n.map((x) => x.id === notifId ? { ...x, read: true } : x));
-  }, []);
+  const reportAccount = useCallback(async (accountId, accountType, reason) => {
+    if (!auth.user || !['customer', 'vendor'].includes(auth.role)) {
+      showToast('Sign in as a customer or vendor to report an account.', 'error');
+      return false;
+    }
+    if (!accountId || !['customer', 'vendor'].includes(accountType)) {
+      showToast('This account cannot be reported.', 'error');
+      return false;
+    }
+    if (!['Spam', 'Scam', 'Inappropriate', 'Impersonation', 'Harassment', 'Other'].includes(reason)) {
+      showToast('Choose a valid reason for reporting this account.', 'error');
+      return false;
+    }
+    const usesRemote = isSupabaseConfigured && Boolean(remoteUser);
+    if (usesRemote && (
+      typeof accountId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(accountId)
+    )) {
+      showToast('The account has no valid Supabase account ID and cannot be reported.', 'error');
+      return false;
+    }
+    const reporterId = remoteUser?.id || auth.user.ownerId || auth.user.id;
+    if (String(reporterId) === String(accountId)) {
+      showToast('You cannot report your own account.', 'error');
+      return false;
+    }
+    try {
+      let report;
+      if (usesRemote) {
+        report = await reportSupabaseAccount(accountId, accountType, reason, auth.role);
+      } else {
+        const existing = accountReports.find((item) => (
+          String(item.reporterId) === String(reporterId)
+          && String(item.accountId) === String(accountId)
+          && item.status === 'open'
+        ));
+        if (existing) {
+          showToast('You already have an open report for this account.', 'error');
+          return false;
+        }
+        report = {
+          id: nextLocalId(),
+          reporterId,
+          accountId,
+          accountType,
+          reason,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+          resolvedAt: null,
+          resolvedBy: null,
+        };
+      }
+      setAccountReports((current) => mergeById(current, [report]));
+      showToast('Account report submitted for admin review.', 'success');
+      return true;
+    } catch (error) {
+      showToast(`Unable to submit account report: ${error.message}`, 'error');
+      return false;
+    }
+  }, [auth, remoteUser, accountReports, showToast]);
+
+  const resolveAccountReport = useCallback(async (report) => {
+    if (auth.role !== 'admin') {
+      showToast('Only an admin can resolve account reports.', 'error');
+      return false;
+    }
+    try {
+      if (isSupabaseConfigured && remoteUser) await resolveSupabaseAccountReport(report.id);
+      const resolvedAt = new Date().toISOString();
+      setAccountReports((current) => current.map((item) => (
+        String(item.id) === String(report.id)
+          ? { ...item, status: 'resolved', resolvedAt, resolvedBy: remoteUser?.id || auth.user?.id }
+          : item
+      )));
+      showToast('Account report resolved.', 'success');
+      return true;
+    } catch (error) {
+      showToast(`Unable to resolve account report: ${error.message}`, 'error');
+      return false;
+    }
+  }, [auth, remoteUser, showToast]);
+
+  const markNotifRead = useCallback(async (notifId) => {
+    const belongsToCurrentUser = (notification) => auth.role === 'admin'
+      ? isAdminNotification(notification, remoteUser?.id || auth.user?.id)
+      : String(notification.userId) === String(auth.user?.id)
+        || String(notification.userId) === String(auth.user?.ownerId);
+    const target = notifications.find((notification) => (
+      String(notification.id) === String(notifId) && belongsToCurrentUser(notification)
+    ));
+    if (!target || target.read) return;
+
+    setNotifications((current) => current.map((notification) => (
+      String(notification.id) === String(target.id)
+      && String(notification.userId) === String(target.userId)
+        ? { ...notification, read: true }
+        : notification
+    )));
+
+    if (isSupabaseConfigured && remoteUser?.id) {
+      const { error } = await markSupabaseNotificationRead(target, remoteUser);
+      if (error) {
+        console.error('[kainhub] failed to mark notification as read:', error.message || error);
+        showToast('Could not save the notification read status. Please try again.', 'error');
+      }
+    }
+  }, [auth, notifications, remoteUser, showToast]);
 
   /*
     Takes the signed-in account's uuid, and matches admin-desk rows through
@@ -1750,9 +2586,28 @@ export function AppProvider({ children }) {
     the admin's uuid, so the literal matched nothing: "Mark all read" reported
     that it had run and left every alert unread.
   */
-  const markAllNotifRead = useCallback((userId) => {
-    setNotifications((n) => n.map((x) => (isAdminNotification(x, userId) ? { ...x, read: true } : x)));
-  }, []);
+  const markAllNotifRead = useCallback(async (userId) => {
+    const belongsToCurrentUser = (notification) => auth.role === 'admin'
+      ? isAdminNotification(notification, userId || remoteUser?.id)
+      : String(notification.userId) === String(auth.user?.id)
+        || String(notification.userId) === String(auth.user?.ownerId);
+    const unread = notifications.filter((notification) => (
+      !notification.read && belongsToCurrentUser(notification)
+    ));
+    if (unread.length === 0) return;
+
+    setNotifications((current) => current.map((notification) => (
+      belongsToCurrentUser(notification) ? { ...notification, read: true } : notification
+    )));
+
+    if (isSupabaseConfigured && remoteUser?.id) {
+      const { error } = await markAllSupabaseNotificationsRead(remoteUser);
+      if (error) {
+        console.error('[kainhub] failed to mark all notifications as read:', error.message || error);
+        showToast('Could not save all notification read statuses. Please try again.', 'error');
+      }
+    }
+  }, [auth, notifications, remoteUser, showToast]);
 
   /*
     Dismiss, for the customer tapping the X on a single row.
@@ -1780,14 +2635,23 @@ export function AppProvider({ children }) {
     minted locally as `Date.now()`-derived strings, but a row written by an older
     build can hold a number.
   */
-  const dismissNotification = useCallback(async (notifId) => {
-    setNotifications((n) => n.filter((x) => String(x.id) !== String(notifId)));
+  const dismissNotification = useCallback(async (notification) => {
+    const target = typeof notification === 'object'
+      ? notification
+      : notifications.find((item) => String(item.id) === String(notification));
+    if (!target) return;
+    dismissedNotificationKeysRef.current.add(notificationKey(target));
+    setNotifications((n) => n.filter((x) => (
+      String(x.id) !== String(target.id) || String(x.userId) !== String(target.userId)
+    )));
     if (!isSupabaseConfigured) return;
-    const { error } = await deleteSupabaseNotification(notifId, remoteUser);
+    await remoteIdleRef.current;
+    const { error } = await deleteSupabaseNotification(target, remoteUser);
     if (error) {
       console.error('[kainhub] failed to delete notification from the database:', error.message || error);
+      showToast('Could not permanently dismiss this notification. Please try again.', 'error');
     }
-  }, [remoteUser]);
+  }, [notifications, remoteUser, showToast]);
 
   /*
     The expiry timer.
@@ -1802,7 +2666,7 @@ export function AppProvider({ children }) {
 
     Twenty seconds is a compromise: the TTL itself is an hour, so the visible
     error in the countdown is at most twenty seconds, while twenty write cycles an
-    hour is nothing next to the 15s remote tick already running.
+    hour is negligible beside the realtime updates.
 
     Each expired row is deleted from the database, not just hidden. Backdating the
     expiry is what removes it from the list, but the row would otherwise sit in
@@ -1828,7 +2692,7 @@ export function AppProvider({ children }) {
         // that are actually in this snapshot. `deleteSupabaseNotification` is
         // idempotent -- deleting an already-deleted row matches nothing -- so a
         // duplicate call is harmless.
-        expired.forEach((item) => { void deleteSupabaseNotification(item.id, remoteUser); });
+        expired.forEach((item) => { void deleteSupabaseNotification(item, remoteUser); });
         return pruneExpiredNotifications(n);
       });
     }, NOTIFICATION_SWEEP_MS);
@@ -1879,7 +2743,7 @@ export function AppProvider({ children }) {
     customers,
     admins,
     orders,
-    auditLogs,
+
     posts,
     notifications,
     platformSettings,
@@ -1898,6 +2762,7 @@ export function AppProvider({ children }) {
     registerVendor,
     resetPassword,
     updatePassword,
+    changePassword,
     unlockAccount,
     logout,
     updateProfile,
@@ -1906,6 +2771,7 @@ export function AppProvider({ children }) {
     addToCart,
     updateCartQty,
     removeFromCart,
+    removeCartItems,
     clearCart,
     // favorites
     myFavorites,
@@ -1924,6 +2790,7 @@ export function AppProvider({ children }) {
     rateShop,
     updateOrderStatus,
     rejectOrder,
+    cancelOrder,
     // vendor
     updateVendor,
     addVendorMenu,
@@ -1951,6 +2818,10 @@ export function AppProvider({ children }) {
     togglePinPost,
     toggleHidePost,
     reportPost,
+    resolvePostReport,
+    accountReports,
+    reportAccount,
+    resolveAccountReport,
     // notifications
     markNotifRead,
     markAllNotifRead,

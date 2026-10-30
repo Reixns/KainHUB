@@ -1,14 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, MapPin, Phone, User, Truck, Package, CreditCard, Banknote, AlertTriangle } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import { Card, Button, Input, Textarea, formatPeso, LogoMark, EmptyState } from '@/components/UI';
 import { sanitizeMobile, isValidMobile, mobileValidationMessage, MOBILE_LENGTH } from '@/lib/mobile';
+import { FIELD_CHAR_LIMITS, characterLimitMessage, findCharacterLimitViolation, isWithinCharacterLimit } from '@/lib/textLimits';
+import { getCartGroupBlockReason } from '@/lib/cartAvailability';
 
 export default function CustomerCheckout() {
-  const { auth, cart, vendors, placeOrder, sendChatOrderReceipt, clearCart, platformSettings, showToast } = useApp();
+  const { auth, cart, vendors, placeOrder, sendChatOrderReceipt, removeCartItems, platformSettings, showToast } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const user = auth.user;
+  const selectedVendorId = location.state?.vendorId || null;
 
   const grouped = cart.reduce((acc, item) => {
     if (!acc[item.vendorId]) {
@@ -19,7 +23,9 @@ export default function CustomerCheckout() {
     acc[item.vendorId].subtotal += item.price * item.quantity;
     return acc;
   }, {});
-  const groups = Object.values(grouped);
+  const groups = selectedVendorId
+    ? Object.values(grouped).filter((g) => String(g.vendor?.id) === String(selectedVendorId))
+    : [];
   // Declared up here rather than after the empty-cart guard so the hook below
   // is unconditional: the early return on an empty cart would otherwise change
   // the hook count between renders.
@@ -47,20 +53,21 @@ export default function CustomerCheckout() {
   // both saw false and placed the order twice. A ref closes that window before
   // React has re-rendered with the new state.
   const placingRef = useRef(false);
+  const [placingVendorId, setPlacingVendorId] = useState(null);
 
   useEffect(() => {
     if (fulfillment === null) setFulfillment(canDeliver ? 'DELIVERY' : 'PICKUP');
     else if (fulfillment === 'DELIVERY' && !canDeliver) setFulfillment('PICKUP');
   }, [canDeliver, fulfillment]);
 
-  if (cart.length === 0) {
+  if (cart.length === 0 || groups.length === 0) {
     return (
       <div>
         <EmptyState
           icon={Package}
-          title="Your cart is empty"
-          description="Add something from a shop to start an order."
-          action={<Button as={Link} to="/customer/shops">Browse shops</Button>}
+          title="No items to checkout"
+          description="Select a shop from your cart to proceed with checkout."
+          action={<Button as={Link} to="/customer/cart">Back to cart</Button>}
         />
       </div>
     );
@@ -94,14 +101,20 @@ export default function CustomerCheckout() {
   */
   const total = groups.reduce((sum, group) => sum + group.subtotal, 0);
 
-  const handlePlaceOrder = () => {
-    if (placingRef.current) return;
+  const handlePlaceOrder = (vendorId) => {
+    if (placingRef.current || placingVendorId) return;
     if (!user?.id) {
       showToast('Your profile is still loading. Please try again in a moment.', 'error');
       return;
     }
-    if (groups.length === 0 || groups.some((group) => !group.vendor)) {
+    const group = groups.find((g) => String(g.vendor?.id) === String(vendorId));
+    if (!group || !group.vendor) {
       showToast('Some shop information is no longer available. Please review your cart.', 'error');
+      return;
+    }
+    const checkoutBlockReason = getCartGroupBlockReason(group.vendor, group.items);
+    if (checkoutBlockReason) {
+      showToast(checkoutBlockReason, 'error');
       return;
     }
     if (fulfillment === 'DELIVERY' && !canDeliver) {
@@ -123,46 +136,59 @@ export default function CustomerCheckout() {
       showToast(mobileValidationMessage(), 'error');
       return;
     }
+    const characterLimitViolation = findCharacterLimitViolation({
+      fullName: name,
+      address,
+      specialInstructions,
+    }, {
+      fullName: FIELD_CHAR_LIMITS.fullName,
+      address: FIELD_CHAR_LIMITS.address,
+      specialInstructions: FIELD_CHAR_LIMITS.specialInstructions,
+    });
+    const invalidItemNote = group.items.some((item) => !isWithinCharacterLimit(
+      item.notes || '',
+      FIELD_CHAR_LIMITS.itemNote,
+    ));
+    if (characterLimitViolation || invalidItemNote) {
+      showToast(characterLimitViolation
+        ? characterLimitMessage(characterLimitViolation.limit)
+        : characterLimitMessage(FIELD_CHAR_LIMITS.itemNote), 'error');
+      return;
+    }
     if (fulfillment === 'DELIVERY' && !address.trim()) {
       showToast('Please enter a delivery address.', 'error');
       return;
     }
-    const unavailableItem = groups.flatMap((group) => group.items.map((cartItem) => {
-      const menuItem = (group.vendor.menu || []).find((item) => String(item.id) === String(cartItem.menuId));
-      return !menuItem || !menuItem.available || (Number(menuItem.stock) || 0) < (Number(cartItem.quantity) || 0) ? cartItem.name : null;
-    })).find(Boolean);
-    if (unavailableItem) {
-      showToast(`${unavailableItem} is no longer available in the requested quantity.`, 'error');
-      return;
-    }
     placingRef.current = true;
     setPlacing(true);
+    setPlacingVendorId(group.vendor.id);
     try {
-      // Place one order per vendor
-      const orders = [];
-      let firstChatId = null;
-      groups.forEach(({ vendor, items }) => {
-        const order = placeOrder({
+      let order;
+      try {
+        order = placeOrder({
           customer: { ...user, fullName: name, mobile, address },
-          vendor,
-          items,
+          vendor: group.vendor,
+          items: group.items,
           fulfillment,
           paymentMethod,
           specialInstructions,
         });
-        if (!order) return;
-        const chatId = sendChatOrderReceipt({ order });
-        if (!firstChatId) firstChatId = chatId;
-        orders.push(order);
-      });
-      if (orders.length === 0) {
+      } catch (e) {
+        console.error(e);
+        showToast('Something went wrong placing your order. Please try again.', 'error');
+        return;
+      }
+      if (!order) {
         showToast('Unable to place the order. Please try again.', 'error');
         return;
       }
-      clearCart();
-      if (orders[0]?.id) {
-        navigate(`/customer/messages?chatId=${encodeURIComponent(firstChatId)}&vendorId=${orders[0].vendorId}`);
+      try {
+        sendChatOrderReceipt({ order });
+      } catch (e) {
+        console.error(e);
       }
+      removeCartItems(group.items.map((item) => item.cartId));
+      navigate('/customer/cart');
     } catch {
       // Without this the rejection escaped the click handler as an unhandled
       // promise and clearCart never ran, so a partially created batch left the
@@ -171,6 +197,7 @@ export default function CustomerCheckout() {
     } finally {
       placingRef.current = false;
       setPlacing(false);
+      setPlacingVendorId(null);
     }
   };
 
@@ -180,7 +207,7 @@ export default function CustomerCheckout() {
   // under the nav on a device with a home indicator, and a flat pb-56 then left
   // the last summary row hidden behind it.
   return (
-    <div className="pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-0">
+    <div className="mx-auto w-full max-w-5xl pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-0">
       <div className="flex items-center gap-2 mb-5">
         <Link to="/customer/cart" aria-label="Back to cart" className="-ml-1 tap-target rounded-full text-muted hover:bg-surface-hover hover:text-ink">
           <ArrowLeft className="w-5 h-5" />
@@ -193,13 +220,13 @@ export default function CustomerCheckout() {
         On mobile the summary falls below the form, which keeps the flow linear
         (details first, then review) instead of interleaving the two.
       */}
-      <div className="lg:grid lg:grid-cols-[1fr_20rem] lg:gap-8 lg:items-start">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
         <div className="space-y-4">
           <CheckoutStep step={1} title="Your details">
-            <Input label="Name" icon={User} value={name} onChange={(e) => setName(e.target.value)} />
+            <Input label="Name" icon={User} value={name} onChange={(e) => setName(e.target.value)} maxCharacters={FIELD_CHAR_LIMITS.fullName} maxLength={FIELD_CHAR_LIMITS.fullName} />
             <Input label="Mobile number" icon={Phone} type="tel" inputMode="numeric" maxLength={MOBILE_LENGTH} value={mobile} onChange={(e) => setMobile(sanitizeMobile(e.target.value))} />
             {fulfillment === 'DELIVERY' && (
-              <Input label="Delivery address" icon={MapPin} value={address} onChange={(e) => setAddress(e.target.value)} />
+              <Input label="Delivery address" icon={MapPin} value={address} onChange={(e) => setAddress(e.target.value)} maxCharacters={FIELD_CHAR_LIMITS.address} maxLength={FIELD_CHAR_LIMITS.address} />
             )}
           </CheckoutStep>
 
@@ -247,62 +274,52 @@ export default function CustomerCheckout() {
               rows={2}
               value={specialInstructions}
               onChange={(e) => setSpecialInstructions(e.target.value)}
+              maxCharacters={FIELD_CHAR_LIMITS.specialInstructions}
+              maxLength={FIELD_CHAR_LIMITS.specialInstructions}
               placeholder="E.g. Please knock three times"
               className="mt-4"
             />
           </CheckoutStep>
         </div>
 
-        {/* Sticky on desktop so the total stays visible while filling the form. */}
-        <div className="mt-4 lg:mt-0 lg:sticky lg:top-20">
-          <Card className="p-4">
-            <h2 className="font-semibold text-ink mb-3">Order summary</h2>
-
-            <div className="space-y-4">
-              {groups.map(({ vendor, items, subtotal: groupSubtotal }) => (
-                <div key={vendor.id}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <LogoMark name={vendor.name} logo={vendor.logo} size="xs" />
-                    <span className="font-medium text-sm text-ink truncate">{vendor.name}</span>
-                    <span className="ml-auto text-sm font-semibold text-ink tabular-nums">{formatPeso(groupSubtotal)}</span>
-                  </div>
-                  <ul className="space-y-1.5">
-                    {items.map((i) => (
-                      <li key={i.cartId} className="flex justify-between gap-3 text-sm">
-                        <span className="text-muted min-w-0">
-                          <span className="font-medium text-body tabular-nums">{i.quantity}&times;</span> {i.name}
-                        </span>
-                        <span className="text-body tabular-nums shrink-0">{formatPeso(i.price * i.quantity)}</span>
-                      </li>
-                    ))}
-                  </ul>
+        <div className="space-y-4">
+          {groups.map(({ vendor, items, subtotal: groupSubtotal }) => {
+            const checkoutBlockReason = getCartGroupBlockReason(vendor, items);
+            return (
+              <Card key={vendor.id} className="overflow-hidden">
+                <div className="flex items-center gap-2 border-b border-hairline px-4 py-3 bg-surface-sunken">
+                  <LogoMark name={vendor.name} logo={vendor.logo} size="xs" />
+                  <span className="font-medium text-sm text-ink truncate">{vendor.name}</span>
+                  <span className="ml-auto text-sm font-semibold text-ink tabular-nums">{formatPeso(groupSubtotal)}</span>
                 </div>
-              ))}
-            </div>
-
-            {/*
-              No delivery fee and no discount exist in this app, so a
-              "Subtotal" row would just repeat the Total. Per-shop amounts are
-              listed above; payment is settled with the shop in chat.
-            */}
-            <div className="border-t border-hairline mt-4 pt-3 text-base font-bold text-ink">
-              <div className="flex justify-between">
-                <span>Total</span>
-                <span className="tabular-nums">{formatPeso(total)}</span>
-              </div>
-            </div>
-
-            {/*
-              The fixed bar below is `lg:hidden`, which meant desktop had no
-              Place Order control at all -- checkout could not be completed on a
-              laptop. The button lives in the sticky summary from `lg` up.
-            */}
-            <div className="hidden lg:block mt-4">
-              <Button className="w-full" size="lg" onClick={handlePlaceOrder} loading={placing}>
-                Place order
-              </Button>
-            </div>
-          </Card>
+                <ul className="divide-y divide-hairline">
+                  {items.map((i) => (
+                    <li key={i.cartId} className="flex justify-between gap-3 px-4 py-2.5 text-sm">
+                      <span className="text-muted min-w-0">
+                        <span className="font-medium text-body tabular-nums">{i.quantity}&times;</span> {i.name}
+                      </span>
+                      <span className="text-body tabular-nums shrink-0">{formatPeso(i.price * i.quantity)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="px-4 py-3 border-t border-hairline">
+                  {checkoutBlockReason && (
+                    <p role="status" className="mb-3 text-sm text-danger">{checkoutBlockReason}</p>
+                  )}
+                  <Button
+                    className="w-full justify-between"
+                    size="lg"
+                    onClick={() => handlePlaceOrder(vendor.id)}
+                    loading={placing && String(placingVendorId) === String(vendor.id)}
+                    disabled={placing || Boolean(checkoutBlockReason)}
+                  >
+                    <span>Place order</span>
+                    <span className="tabular-nums">{formatPeso(groupSubtotal)} • {items.reduce((s, i) => s + i.quantity, 0)} item{items.reduce((s, i) => s + i.quantity, 0) !== 1 ? 's' : ''}</span>
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
         </div>
       </div>
 
@@ -314,14 +331,30 @@ export default function CustomerCheckout() {
         nav on any device with a home indicator.
       */}
       <div className="lg:hidden fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom))] left-0 right-0 bg-white border-t border-hairline z-30 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-xs text-muted">Total</div>
-            <div className="text-lg font-bold text-ink tabular-nums leading-tight">{formatPeso(total)}</div>
+        <div className="px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs text-muted">Total</div>
+              <div className="text-lg font-bold text-ink tabular-nums leading-tight">{formatPeso(total)}</div>
+            </div>
+            <div className="text-xs text-muted">{groups.length === 1 ? '1 shop' : `${groups.length} shops`}</div>
           </div>
-          <Button className="shrink-0" size="lg" onClick={handlePlaceOrder} loading={placing}>
-            Place order
-          </Button>
+          {groups.map(({ vendor, items, subtotal: groupSubtotal }) => {
+            const checkoutBlockReason = getCartGroupBlockReason(vendor, items);
+            return (
+              <Button
+                key={vendor.id}
+                className="w-full justify-between"
+                size="lg"
+                onClick={() => handlePlaceOrder(vendor.id)}
+                loading={placing && String(placingVendorId) === String(vendor.id)}
+                disabled={placing || Boolean(checkoutBlockReason)}
+              >
+                <span>Place order • {vendor.name}</span>
+                <span className="tabular-nums">{formatPeso(groupSubtotal)} • {items.reduce((s, i) => s + i.quantity, 0)} item{items.reduce((s, i) => s + i.quantity, 0) !== 1 ? 's' : ''}</span>
+              </Button>
+            );
+          })}
         </div>
         <div className="h-[env(safe-area-inset-bottom)]" />
       </div>

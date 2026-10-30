@@ -20,7 +20,6 @@ export default function ForgotPassword() {
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
-
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError('');

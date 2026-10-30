@@ -1,12 +1,16 @@
 import { useState } from 'react';
 import { ChevronDown, Tag } from 'lucide-react';
+import { countCharacters, FIELD_CHAR_LIMITS } from '@/lib/textLimits';
 
 const CUSTOM_CATEGORY_OPTION = '__enter_custom_category__';
 
-export default function ProductCategoryField({ value, onChange, categories }) {
+export default function ProductCategoryField({ value, onChange, categories, theme = 'dark' }) {
   const [customMode, setCustomMode] = useState(false);
+  const isDark = theme === 'dark';
   const categoryOptions = [...new Set([...categories, value].map((category) => category?.trim()).filter(Boolean))];
   const selection = customMode ? CUSTOM_CATEGORY_OPTION : value || '';
+  const characters = countCharacters(value);
+  const overLimit = characters > FIELD_CHAR_LIMITS.category;
 
   const handleSelectionChange = (event) => {
     const nextValue = event.target.value;
@@ -19,7 +23,15 @@ export default function ProductCategoryField({ value, onChange, categories }) {
     onChange(nextValue);
   };
 
-  const controlClass = 'w-full min-h-11 rounded-control border border-hairline-strong bg-white py-3 text-sm text-ink transition-colors duration-150 hover:border-hairline-hover focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand-muted';
+  const controlClass = [
+    'w-full min-h-11 rounded-control border py-3 text-sm transition-colors duration-150 focus:outline-none focus:ring-2',
+    isDark
+      ? 'bg-[#101014] text-white'
+      : 'bg-white text-ink',
+    isDark
+      ? 'border-white/15 hover:border-violet-300/50 focus:border-violet-400 focus:ring-violet-400/20'
+      : 'border-hairline-strong hover:border-hairline-hover focus:border-brand focus:ring-brand-muted',
+  ].join(' ');
 
   return (
     <div className="w-full">
@@ -32,7 +44,7 @@ export default function ProductCategoryField({ value, onChange, categories }) {
           id="product-category-select"
           value={selection}
           onChange={handleSelectionChange}
-          style={{ colorScheme: 'light' }}
+          style={{ colorScheme: isDark ? 'dark' : 'light' }}
           className={`${controlClass} appearance-none pl-11 pr-10`}
         >
           <option value="" disabled>Select a category</option>
@@ -51,6 +63,7 @@ export default function ProductCategoryField({ value, onChange, categories }) {
           onBlur={() => setCustomMode(false)}
           autoComplete="off"
           aria-label="Enter product category"
+          maxLength={FIELD_CHAR_LIMITS.category}
           placeholder="Enter a category"
           className={`${controlClass} mt-2 px-3.5 placeholder:text-subtle`}
         />
@@ -58,6 +71,11 @@ export default function ProductCategoryField({ value, onChange, categories }) {
       <p className="mt-1.5 text-xs text-muted">
         Choose a category already used on your menu or enter a new one.
       </p>
+      {customMode && (
+        <p className={`mt-1 text-right text-xs ${overLimit ? 'font-semibold text-danger' : 'text-muted'}`} aria-live="polite">
+          {characters}/{FIELD_CHAR_LIMITS.category} characters{overLimit ? ' — over the limit' : ''}
+        </p>
+      )}
     </div>
   );
 }

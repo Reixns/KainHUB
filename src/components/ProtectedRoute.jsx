@@ -1,14 +1,11 @@
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import SessionSkeleton from '@/components/SessionSkeleton';
 
 export default function ProtectedRoute({ children, role }) {
   const { auth, authError, authReady } = useApp();
   const location = useLocation();
 
-  if (!authReady) {
-    return <SessionSkeleton role={role} />;
-  }
+  if (!authReady) return null;
 
   if (authError) {
     return (

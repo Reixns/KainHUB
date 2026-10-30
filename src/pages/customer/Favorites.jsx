@@ -1,8 +1,9 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Clock3, Heart, Star } from 'lucide-react';
+import { Clock3, Heart, ShoppingCart, Star } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { Card, EmptyState, Badge, formatPeso, getProductImage, timeAgo, MediaImage, isImageSource } from '@/components/UI';
+import ProductCard from '@/components/ProductCard';
+import { Button, Card, EmptyState, Badge, timeAgo, MediaImage, isImageSource, PageHeader } from '@/components/UI';
 import FavoriteButton from '@/components/FavoriteButton';
 
 /*
@@ -47,17 +48,15 @@ export default function CustomerFavorites() {
   const isEmpty = shops.length === 0 && dishes.length === 0 && missing.length === 0;
 
   return (
-    <div>
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-xl font-bold text-ink tracking-tight">Favorites</h1>
-          <p className="text-sm text-muted mt-0.5">
-            {myFavorites.length === 0
-              ? 'Shops and dishes you save are kept here.'
-              : `${shops.length} shop${shops.length === 1 ? '' : 's'} and ${dishes.length} dish${dishes.length === 1 ? '' : 'es'} saved.`}
-          </p>
-        </div>
-      </div>
+    <div className="mx-auto w-full max-w-4xl">
+      <PageHeader
+        eyebrow="Saved for later"
+        icon={Heart}
+        title="Favorites"
+        description={myFavorites.length === 0
+          ? 'Shops and dishes you save are kept here.'
+          : `${shops.length} shop${shops.length === 1 ? '' : 's'} and ${dishes.length} dish${dishes.length === 1 ? '' : 'es'} saved.`}
+      />
 
       {isEmpty && (
         <EmptyState
@@ -92,7 +91,7 @@ export default function CustomerFavorites() {
       {shops.length > 0 && (
         <section className="mb-6">
           <h2 className="font-bold text-ink mb-3">Shops</h2>
-          <div className="-mx-3 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-4 sm:px-4 lg:-mx-8 lg:px-8">
+          <div className="-mx-3 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-4 sm:px-4 lg:mx-0 lg:px-0">
             <div className="flex w-max gap-4">
               {shops.map(({ favorite, shop }) => (
                 <SavedShopCard key={`shop-${favorite.refId}`} shop={shop} favorite={favorite} />
@@ -105,7 +104,7 @@ export default function CustomerFavorites() {
       {dishes.length > 0 && (
         <section>
           <h2 className="font-bold text-ink mb-3">Dishes</h2>
-          <div className="-mx-3 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-4 sm:px-4 lg:-mx-8 lg:px-8">
+          <div className="-mx-3 overflow-x-auto px-3 pb-3 scrollbar-hide sm:-mx-4 sm:px-4 lg:mx-0 lg:px-0">
             <div className="flex w-max gap-4">
             {dishes.map(({ favorite, shop, dish }) => (
               <SavedDishCard key={`product-${favorite.refId}`} dish={dish} shop={shop} favorite={favorite} />
@@ -185,50 +184,28 @@ function ShopTileFallback({ mark }) {
   );
 }
 
-/*
-  Dish tile placeholder, for both "no image" and "image would not load", so the
-  two cases cannot disagree about what an empty tile looks like.
-*/
-function DishTileFallback({ dish }) {
-  return (
-    <div className="w-full h-full flex items-center justify-center text-4xl" aria-hidden="true">
-      {dish.image && dish.image.length <= 4 ? dish.image : '🍽️'}
-    </div>
-  );
-}
-
 function SavedDishCard({ dish, shop, favorite }) {
-  const photo = getProductImage(dish.image);
+  const { addToCart } = useApp();
+  const available = Boolean(dish.available)
+    && (dish.stock == null || dish.stock === '' || !Number.isFinite(Number(dish.stock)) || Number(dish.stock) > 0)
+    && shop.storeStatus === 'OPEN';
+
   return (
-    <Card className="group w-[11.5rem] shrink-0 overflow-hidden border-white/10 transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-violet-300/40 sm:w-52">
-      <Link
-        to={`/customer/shops/${shop.id}`}
-        aria-label={`${dish.name} from ${shop.name}`}
-        className="relative block aspect-[4/5] overflow-hidden bg-surface-hover focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-violet-300"
-      >
-        {photo ? (
-          <MediaImage
-            src={photo}
-            alt={dish.name}
-            className="absolute inset-0 block h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-            fallback={<div className="absolute inset-0"><DishTileFallback dish={dish} /></div>}
-          />
-        ) : (
-          <div className="absolute inset-0"><DishTileFallback dish={dish} /></div>
-        )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/15 to-black/5" />
-        <span className="absolute right-1.5 top-1.5">
-          <FavoriteButton type="product" refId={dish.id} vendorId={shop.id} label={dish.name} className="!h-9 !min-h-9 !w-9 !min-w-9" />
-        </span>
-        <div className="absolute inset-x-0 bottom-0 p-3">
-          <h3 className="line-clamp-2 min-h-10 text-sm font-bold leading-tight text-white sm:text-base">{dish.name}</h3>
-          <p className="mt-1 line-clamp-1 text-xs text-white/65">{shop.name}</p>
-          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-white/20 pt-2">
-            <span className="text-sm font-bold tabular-nums text-white sm:text-base">{formatPeso(dish.price)}</span>
-            <span className="truncate text-right text-[10px] text-white/60">Saved {timeAgo(favorite.createdAt)}</span>
-          </div>
-        </div>
-      </Link>
-    </Card>
+    <ProductCard
+      product={dish}
+      shop={shop}
+      meta={`Saved ${timeAgo(favorite.createdAt)}`}
+    >
+        <Button
+          variant="secondary"
+          size="sm"
+          full
+          disabled={!available}
+          onClick={() => addToCart(shop, dish, 1, '')}
+        >
+          <ShoppingCart className="h-4 w-4" aria-hidden="true" />
+          {available ? 'Add to cart' : 'Unavailable'}
+        </Button>
+    </ProductCard>
   );
 }
